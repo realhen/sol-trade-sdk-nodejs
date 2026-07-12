@@ -1,4 +1,5 @@
 import { Connection, Keypair, PublicKey } from '@solana/web3.js';
+import bs58 from 'bs58';
 import {
   AstralaneTransport,
   BondingCurveAccount,
@@ -92,7 +93,65 @@ export function tradeConfig(options: Partial<TradeConfig> = {}): TradeConfig {
 }
 
 export function createExampleClient(options: Partial<TradeConfig> = {}): TradingClient {
+  if (RUN_LIVE) {
+    throw new Error(
+      'The protocol examples contain placeholder accounts and are dry-run only. ' +
+        'Use low_latency_bot.ts and wire real parser/streamer state before submitting.'
+    );
+  }
   return new TradingClient(Keypair.generate(), tradeConfig(options));
+}
+
+export function loadPayerFromEnv(name = 'PRIVATE_KEY'): Keypair {
+  const encoded = process.env[name]?.trim();
+  if (!encoded) throw new Error(`${name} is required for live trading`);
+
+  let secret: Uint8Array | undefined = undefined;
+  try {
+    if (encoded.startsWith('[')) {
+      const values: unknown = JSON.parse(encoded);
+      if (!Array.isArray(values) || values.length !== 64 || values.some((v) => !Number.isInteger(v) || Number(v) < 0 || Number(v) > 255)) {
+        throw new Error('JSON private key must contain exactly 64 bytes');
+      }
+      secret = Uint8Array.from(values as number[]);
+    } else {
+      secret = bs58.decode(encoded);
+    }
+    if (secret.length !== 64) throw new Error(`decoded private key has ${secret.length} bytes, expected 64`);
+    return Keypair.fromSecretKey(secret);
+  } catch (error) {
+    throw new Error(`Invalid ${name}: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    secret?.fill(0);
+  }
+}
+
+export function createLiveClient(options: Partial<TradeConfig> = {}): TradingClient {
+  if (!RUN_LIVE) throw new Error('Set RUN_LIVE_EXAMPLES=1 only after all live adapters are configured');
+  return new TradingClient(loadPayerFromEnv(), tradeConfig(options));
+}
+
+export function isEventFresh(receivedAtMs: number, maxAgeMs: number, nowMs = Date.now()): boolean {
+  return Number.isFinite(receivedAtMs) && maxAgeMs > 0 && receivedAtMs <= nowMs && nowMs - receivedAtMs <= maxAgeMs;
+}
+
+export function matchesTarget(actual: PublicKey, expected?: PublicKey): boolean {
+  return expected === undefined || actual.equals(expected);
+}
+
+export function checkedPositionDelta(before: bigint, after: bigint): bigint {
+  if (after <= before) throw new Error(`Buy produced no positive token balance delta: before=${before} after=${after}`);
+  return after - before;
+}
+
+export function validateTradeIntent(inputAmount: number, slippageBasisPoints: number, fixedOutput?: number): void {
+  if (!Number.isSafeInteger(inputAmount) || inputAmount <= 0) throw new Error('input amount must be a positive safe integer');
+  if (!Number.isInteger(slippageBasisPoints) || slippageBasisPoints < 0 || slippageBasisPoints >= 10_000) {
+    throw new Error('slippage must be an integer from 0 through 9999 basis points');
+  }
+  if (fixedOutput !== undefined && (!Number.isSafeInteger(fixedOutput) || fixedOutput <= 0)) {
+    throw new Error('fixed output amount must be a positive safe integer when provided');
+  }
 }
 
 export function createConnection(): Connection {
@@ -259,9 +318,6 @@ export function exampleBuyParams(dexType: DexType, mint?: PublicKey): TradeBuyPa
     gasFeeStrategy: flatGasFeeStrategy,
     grpcRecvUs: Date.now() * 1000,
   };
-  if (dexType === DexType.MeteoraDammV2) {
-    params.fixedOutputTokenAmount = 90_000;
-  }
   return params;
 }
 
@@ -282,15 +338,12 @@ export function exampleSellParams(dexType: DexType, mint?: PublicKey): TradeSell
     gasFeeStrategy: flatGasFeeStrategy,
     grpcRecvUs: Date.now() * 1000,
   };
-  if (dexType === DexType.MeteoraDammV2) {
-    params.fixedOutputTokenAmount = 45_000;
-  }
   return params;
 }
 
 export function describeDryRun(name: string): void {
   console.log(name + ' prepared with current SDK types.');
-  console.log('Set RUN_LIVE_EXAMPLES=1 and replace example params with real RPC or decoded event data before sending transactions.');
+  console.log('Placeholder protocol accounts are never submitted. Use low_latency_bot.ts for the guarded live workflow.');
 }
 
 export function logResult(label: string, result: TradeResult): void {

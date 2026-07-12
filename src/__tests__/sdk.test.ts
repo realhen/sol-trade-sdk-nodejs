@@ -47,6 +47,7 @@ import {
   RUST_PARITY_SIMULATE_CONFIG,
   commitmentToGetTxFinality,
   type InstructionMiddleware,
+  validateSlippage,
 } from '../index';
 import {
   ASTRALANE_ENDPOINTS,
@@ -866,6 +867,24 @@ describe('confirmAnyTransactionSignature', () => {
 });
 
 describe('TradingClient execution parity', () => {
+  it('rejects unsafe trade boundaries before building instructions', async () => {
+    const client = new TradingClient(
+      Keypair.generate(),
+      TradeConfigBuilder.create('https://rpc.example').build()
+    );
+
+    await expect(
+      client.buy({ inputTokenAmount: 0, slippageBasisPoints: 300 } as any)
+    ).rejects.toThrow('inputTokenAmount cannot be zero');
+    await expect(
+      client.buy({ inputTokenAmount: 1, slippageBasisPoints: 300, fixedOutputTokenAmount: 0 } as any)
+    ).rejects.toThrow('fixedOutputTokenAmount cannot be zero');
+    await expect(
+      client.sell({ inputTokenAmount: 1, slippageBasisPoints: 10_000 } as any)
+    ).rejects.toThrow('less than 10000');
+    expect(() => validateSlippage(9_999)).not.toThrow();
+  });
+
   it('prefers durable nonce hash over recent blockhash on the legacy execution path', async () => {
     const payer = Keypair.generate();
     const client = new (TradingClient as any)(

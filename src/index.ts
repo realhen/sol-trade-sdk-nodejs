@@ -68,6 +68,7 @@ import { computeBudgetInstructions } from './common/compute-budget';
 import { confirmAnyTransactionSignature } from './common/confirm-any-signature';
 import { InstructionProcessor, Prefetch } from './execution/execution';
 import type { SwqosClient as RuntimeSwqosClient } from './swqos/clients';
+import { validateAmount, validateSlippage } from './security/validators';
 
 // ============== Enums ==============
 
@@ -1732,6 +1733,13 @@ export class TradingClient {
    * Execute a buy order
    */
   async buy(params: TradeBuyParams): Promise<TradeResult> {
+    validateAmount(params.inputTokenAmount, 'inputTokenAmount');
+    if (params.slippageBasisPoints !== undefined) {
+      validateSlippage(params.slippageBasisPoints);
+    }
+    if (params.fixedOutputTokenAmount !== undefined) {
+      validateAmount(params.fixedOutputTokenAmount, 'fixedOutputTokenAmount');
+    }
     const blockhash =
       params.durableNonce?.nonceHash ?? params.recentBlockhash;
     if (!blockhash) {
@@ -1805,6 +1813,13 @@ export class TradingClient {
    * Execute a sell order
    */
   async sell(params: TradeSellParams): Promise<TradeResult> {
+    validateAmount(params.inputTokenAmount, 'inputTokenAmount');
+    if (params.slippageBasisPoints !== undefined) {
+      validateSlippage(params.slippageBasisPoints);
+    }
+    if (params.fixedOutputTokenAmount !== undefined) {
+      validateAmount(params.fixedOutputTokenAmount, 'fixedOutputTokenAmount');
+    }
     const blockhash =
       params.durableNonce?.nonceHash ?? params.recentBlockhash;
     if (!blockhash) {

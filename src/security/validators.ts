@@ -189,9 +189,9 @@ export function validateSlippage(slippageBasisPoints: number): number {
     throw new ValidationError(`Slippage cannot be negative: ${slippageBasisPoints}`);
   }
 
-  if (slippageBasisPoints > 10000) {
+  if (slippageBasisPoints >= 10000) {
     throw new ValidationError(
-      `Slippage cannot exceed 10000 basis points (100%), got ${slippageBasisPoints}`
+      `Slippage must be less than 10000 basis points (100%), got ${slippageBasisPoints}`
     );
   }
 
