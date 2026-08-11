@@ -76,12 +76,15 @@
     "url": "git+https://github.com/0xfnzero/sol-trade-sdk-nodejs.git"
   },
   "dependencies": {
+    "@grpc/grpc-js": "^1.14.4",
     "@matrixai/quic": "^2.0.9",
     "@peculiar/x509": "^1.14.2",
     "@solana/web3.js": "^1.98.4",
     "bn.js": "^5.2.1",
     "borsh": "^0.7.0",
     "bs58": "^5.0.0",
+    "protobufjs": "^7.6.5",
+    "quico": "^0.4.0",
     "selfsigned": "^5.5.0",
     "tweetnacl": "^1.0.3"
   },

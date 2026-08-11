@@ -13,6 +13,8 @@ import {
 } from '../index';
 import { TradeError } from '../sdk-errors';
 import bs58 from 'bs58';
+import * as grpc from '@grpc/grpc-js';
+import { Reader, Writer } from 'protobufjs/minimal';
 
 // ===== Utility =====
 
@@ -364,16 +366,29 @@ export const NODE1_ENDPOINTS: Record<SwqosRegion, string> = {
 };
 
 export const BLOCK_RAZOR_ENDPOINTS: Record<SwqosRegion, string> = {
-  [SwqosRegion.NewYork]: 'http://newyork.solana.blockrazor.xyz:443/v2/sendTransaction',
-  [SwqosRegion.Frankfurt]: 'http://frankfurt.solana.blockrazor.xyz:443/v2/sendTransaction',
-  [SwqosRegion.Amsterdam]: 'http://amsterdam.solana.blockrazor.xyz:443/v2/sendTransaction',
-  [SwqosRegion.Dublin]: 'http://london.solana.blockrazor.xyz:443/v2/sendTransaction',
-  [SwqosRegion.SLC]: 'http://newyork.solana.blockrazor.xyz:443/v2/sendTransaction',
-  [SwqosRegion.Tokyo]: 'http://tokyo.solana.blockrazor.xyz:443/v2/sendTransaction',
-  [SwqosRegion.London]: 'http://london.solana.blockrazor.xyz:443/v2/sendTransaction',
-  [SwqosRegion.LosAngeles]: 'http://newyork.solana.blockrazor.xyz:443/v2/sendTransaction',
-  [SwqosRegion.Singapore]: 'http://tokyo.solana.blockrazor.xyz:443/v2/sendTransaction',
-  [SwqosRegion.Default]: 'http://frankfurt.solana.blockrazor.xyz:443/v2/sendTransaction',
+  [SwqosRegion.NewYork]: 'http://newyork.solana.blockrazor.xyz:443/sendTransaction',
+  [SwqosRegion.Frankfurt]: 'http://frankfurt.solana.blockrazor.xyz:443/sendTransaction',
+  [SwqosRegion.Amsterdam]: 'http://amsterdam.solana.blockrazor.xyz:443/sendTransaction',
+  [SwqosRegion.Dublin]: 'http://london.solana.blockrazor.xyz:443/sendTransaction',
+  [SwqosRegion.SLC]: 'http://newyork.solana.blockrazor.xyz:443/sendTransaction',
+  [SwqosRegion.Tokyo]: 'http://tokyo.solana.blockrazor.xyz:443/sendTransaction',
+  [SwqosRegion.London]: 'http://london.solana.blockrazor.xyz:443/sendTransaction',
+  [SwqosRegion.LosAngeles]: 'http://losangeles.solana.blockrazor.xyz:443/sendTransaction',
+  [SwqosRegion.Singapore]: 'http://singapore.solana.blockrazor.xyz:443/sendTransaction',
+  [SwqosRegion.Default]: 'http://frankfurt.solana.blockrazor.xyz:443/sendTransaction',
+};
+
+export const BLOCK_RAZOR_GRPC_ENDPOINTS: Record<SwqosRegion, string> = {
+  [SwqosRegion.NewYork]: 'newyork.solana-grpc.blockrazor.xyz:80',
+  [SwqosRegion.Frankfurt]: 'frankfurt.solana-grpc.blockrazor.xyz:80',
+  [SwqosRegion.Amsterdam]: 'amsterdam.solana-grpc.blockrazor.xyz:80',
+  [SwqosRegion.Dublin]: 'london.solana-grpc.blockrazor.xyz:80',
+  [SwqosRegion.SLC]: 'newyork.solana-grpc.blockrazor.xyz:80',
+  [SwqosRegion.Tokyo]: 'tokyo.solana-grpc.blockrazor.xyz:80',
+  [SwqosRegion.London]: 'london.solana-grpc.blockrazor.xyz:80',
+  [SwqosRegion.LosAngeles]: 'losangeles.solana-grpc.blockrazor.xyz:80',
+  [SwqosRegion.Singapore]: 'singapore.solana-grpc.blockrazor.xyz:80',
+  [SwqosRegion.Default]: 'frankfurt.solana-grpc.blockrazor.xyz:80',
 };
 
 export const ASTRALANE_ENDPOINTS: Record<SwqosRegion, string> = {
@@ -550,6 +565,55 @@ abstract class BaseClient implements SwqosClient {
 
     return parseBodyAsJsonOrText(response);
   }
+}
+
+function shouldFallbackTransport(error: unknown): boolean {
+  if (error instanceof TradeError) {
+    return error.code >= 500 || error.code === 408 || error.code === 425;
+  }
+  const grpcCode = (error as { code?: number } | undefined)?.code;
+  if (typeof grpcCode === 'number') {
+    return [grpc.status.UNAVAILABLE, grpc.status.DEADLINE_EXCEEDED, grpc.status.INTERNAL].includes(grpcCode);
+  }
+  if (error instanceof TypeError) return true;
+  const value = error as { code?: unknown; cause?: unknown } | undefined;
+  const networkCodes = new Set([
+    'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH',
+    'EPIPE', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET',
+  ]);
+  if (typeof value?.code === 'string' && networkCodes.has(value.code)) return true;
+  return value?.cause !== undefined && value.cause !== error
+    ? shouldFallbackTransport(value.cause)
+    : false;
+}
+
+export class FallbackSwqosClient implements SwqosClient {
+  constructor(
+    readonly primary: SwqosClient,
+    readonly fallback: SwqosClient,
+  ) {}
+
+  async sendTransaction(tradeType: TradeType, transaction: Buffer, waitConfirmation: boolean): Promise<string> {
+    try {
+      return await this.primary.sendTransaction(tradeType, transaction, waitConfirmation);
+    } catch (error) {
+      if (!shouldFallbackTransport(error)) throw error;
+      return this.fallback.sendTransaction(tradeType, transaction, waitConfirmation);
+    }
+  }
+
+  async sendTransactions(tradeType: TradeType, transactions: Buffer[], waitConfirmation: boolean): Promise<string[]> {
+    try {
+      return await this.primary.sendTransactions(tradeType, transactions, waitConfirmation);
+    } catch (error) {
+      if (!shouldFallbackTransport(error)) throw error;
+      return this.fallback.sendTransactions(tradeType, transactions, waitConfirmation);
+    }
+  }
+
+  getTipAccount(): string { return this.primary.getTipAccount(); }
+  getSwqosType(): SwqosType { return this.primary.getSwqosType(); }
+  minTipSol(): number { return this.primary.minTipSol(); }
 }
 
 // ===== Jito Client =====
@@ -762,6 +826,82 @@ export class ZeroSlotClient extends BaseClient {
 
 // ===== Temporal Client =====
 
+const TEMPORAL_MAX_BATCH_SIZE = 16;
+const TEMPORAL_MIN_TX_SIZE = 66;
+const TEMPORAL_MAX_TX_SIZE = 1232;
+
+export function encodeTemporalBatch(transactions: readonly Buffer[]): Buffer {
+  if (transactions.length === 0) {
+    throw new TradeError(400, 'Temporal batch cannot be empty');
+  }
+  if (transactions.length > TEMPORAL_MAX_BATCH_SIZE) {
+    throw new TradeError(400, `Temporal batch has ${transactions.length} transactions; maximum is ${TEMPORAL_MAX_BATCH_SIZE}`);
+  }
+  let size = 0;
+  for (const tx of transactions) {
+    if (tx.length < TEMPORAL_MIN_TX_SIZE || tx.length > TEMPORAL_MAX_TX_SIZE) {
+      throw new TradeError(400, `Temporal transaction size ${tx.length} is outside ${TEMPORAL_MIN_TX_SIZE}..${TEMPORAL_MAX_TX_SIZE} bytes`);
+    }
+    size += 2 + tx.length;
+  }
+  const body = Buffer.allocUnsafe(size);
+  let offset = 0;
+  for (const tx of transactions) {
+    body.writeUInt16BE(tx.length, offset);
+    offset += 2;
+    tx.copy(body, offset);
+    offset += tx.length;
+  }
+  return body;
+}
+
+function temporalBatchUrl(endpoint: string, authToken?: string, forceTls = false): string {
+  const raw = /^https?:\/\//.test(endpoint) ? endpoint : `http://${endpoint}`;
+  const url = new URL(raw);
+  if (forceTls) url.protocol = 'https:';
+  url.pathname = '/api/sendBatch';
+  if (authToken) url.searchParams.set('c', authToken);
+  return url.toString();
+}
+
+async function postTemporalHttp3(url: string, body: Buffer): Promise<void> {
+  let quico: typeof import('quico')['default'];
+  try {
+    ({ default: quico } = await import('quico'));
+  } catch (error) {
+    throw new TradeError(501, 'Temporal QUIC/HTTP3 is unavailable in this runtime', error as Error);
+  }
+  await new Promise<void>((resolve, reject) => {
+    const request = quico.request(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/octet-stream',
+        'content-length': String(body.length),
+      },
+      timeout: 3000,
+    }, response => {
+      const chunks: Buffer[] = [];
+      response.on('data', chunk => chunks.push(Buffer.from(chunk)));
+      response.on('end', () => {
+        const status = response.statusCode ?? 500;
+        if (status >= 200 && status < 300) {
+          resolve();
+        } else {
+          reject(new TradeError(status, `Temporal HTTP/3 error: ${Buffer.concat(chunks).toString() || status}`));
+        }
+      });
+    });
+    request.on('timeout', () => {
+      request.abort();
+      reject(new TradeError(408, 'Temporal HTTP/3 request timed out'));
+    });
+    request.on('error', error => {
+      reject(new TradeError(503, `Temporal HTTP/3 transport error: ${error.message}`, error));
+    });
+    request.end(body);
+  });
+}
+
 export class TemporalClient extends BaseClient {
   private tipAccounts = TEMPORAL_TIP_ACCOUNTS;
 
@@ -778,28 +918,24 @@ export class TemporalClient extends BaseClient {
     transaction: Buffer,
     waitConfirmation: boolean
   ): Promise<string> {
-    const encoded = transaction.toString('base64');
+    const body = encodeTemporalBatch([transaction]);
+    await this.postRaw(
+      temporalBatchUrl(this.endpoint, this.authToken),
+      body,
+      {},
+      'application/octet-stream',
+    );
+    return signatureFromSerializedTransaction(transaction);
+  }
 
-    const payload = {
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'sendTransaction',
-      params: [encoded, { encoding: 'base64' }],
-    };
-
-    // Auth in URL param ?c=token, no Authorization header
-    let url = this.endpoint;
-    if (this.authToken) {
-      url = `${this.endpoint}/?c=${this.authToken}`;
+  override async sendTransactions(tradeType: TradeType, transactions: Buffer[], waitConfirmation: boolean): Promise<string[]> {
+    const signatures: string[] = [];
+    for (let start = 0; start < transactions.length; start += TEMPORAL_MAX_BATCH_SIZE) {
+      const batch = transactions.slice(start, start + TEMPORAL_MAX_BATCH_SIZE);
+      await this.postRaw(temporalBatchUrl(this.endpoint, this.authToken), encodeTemporalBatch(batch), {}, 'application/octet-stream');
+      signatures.push(...batch.map(signatureFromSerializedTransaction));
     }
-
-    const result = (await this.post(url, payload)) as any;
-
-    if (result.error) {
-      throw new TradeError(result.error.code || 500, result.error.message || String(result.error));
-    }
-
-    return extractSubmitSignature(result);
+    return signatures;
   }
 
   getTipAccount(): string {
@@ -813,6 +949,37 @@ export class TemporalClient extends BaseClient {
   minTipSol(): number {
     return MIN_TIP_TEMPORAL;
   }
+}
+
+export class TemporalQuicClient extends BaseClient {
+  private readonly tipAccounts = TEMPORAL_TIP_ACCOUNTS;
+
+  constructor(
+    private readonly rpcUrl: string,
+    private readonly endpoint: string,
+    private readonly authToken?: string,
+  ) {
+    super();
+  }
+
+  async sendTransaction(tradeType: TradeType, transaction: Buffer, waitConfirmation: boolean): Promise<string> {
+    await postTemporalHttp3(temporalBatchUrl(this.endpoint, this.authToken, true), encodeTemporalBatch([transaction]));
+    return signatureFromSerializedTransaction(transaction);
+  }
+
+  override async sendTransactions(tradeType: TradeType, transactions: Buffer[], waitConfirmation: boolean): Promise<string[]> {
+    const signatures: string[] = [];
+    for (let start = 0; start < transactions.length; start += TEMPORAL_MAX_BATCH_SIZE) {
+      const batch = transactions.slice(start, start + TEMPORAL_MAX_BATCH_SIZE);
+      await postTemporalHttp3(temporalBatchUrl(this.endpoint, this.authToken, true), encodeTemporalBatch(batch));
+      signatures.push(...batch.map(signatureFromSerializedTransaction));
+    }
+    return signatures;
+  }
+
+  getTipAccount(): string { return randomChoice(this.tipAccounts); }
+  getSwqosType(): SwqosType { return SwqosType.Temporal; }
+  minTipSol(): number { return MIN_TIP_TEMPORAL; }
 }
 
 // ===== FlashBlock Client =====
@@ -1041,6 +1208,55 @@ export class Node1QuicClient implements SwqosClient {
 
 // ===== BlockRazor Client =====
 
+interface BlockRazorBinaryRequest {
+  binaryTransaction: Buffer;
+  mode: string;
+  safeWindow: number;
+  revertProtection: boolean;
+}
+
+function serializeBlockRazorBinaryRequest(value: BlockRazorBinaryRequest): Buffer {
+  const writer = Writer.create()
+    .uint32(10).bytes(value.binaryTransaction)
+    .uint32(18).string(value.mode)
+    .uint32(24).int32(value.safeWindow);
+  if (value.revertProtection) writer.uint32(32).bool(true);
+  return Buffer.from(writer.finish());
+}
+
+function deserializeBlockRazorResponse(buffer: Buffer): { signature: string } {
+  const reader = Reader.create(buffer);
+  let signature = '';
+  while (reader.pos < reader.len) {
+    const tag = reader.uint32();
+    if ((tag >>> 3) === 1) signature = reader.string();
+    else reader.skipType(tag & 7);
+  }
+  return { signature };
+}
+
+const blockRazorGrpcDefinition = {
+  sendBinaryTransaction: {
+    path: '/serverpb.Server/SendBinaryTransaction',
+    requestStream: false,
+    responseStream: false,
+    requestSerialize: serializeBlockRazorBinaryRequest,
+    requestDeserialize: () => { throw new Error('client-only method'); },
+    responseSerialize: () => { throw new Error('client-only method'); },
+    responseDeserialize: deserializeBlockRazorResponse,
+    originalName: 'SendBinaryTransaction',
+  },
+} satisfies grpc.ServiceDefinition;
+
+type BlockRazorGrpcStub = grpc.Client & {
+  sendBinaryTransaction(
+    request: BlockRazorBinaryRequest,
+    metadata: grpc.Metadata,
+    options: grpc.CallOptions,
+    callback: (error: grpc.ServiceError | null, response: { signature: string }) => void,
+  ): grpc.ClientUnaryCall;
+};
+
 export class BlockRazorClient extends BaseClient {
   private tipAccounts = BLOCK_RAZOR_TIP_ACCOUNTS;
 
@@ -1058,18 +1274,15 @@ export class BlockRazorClient extends BaseClient {
     transaction: Buffer,
     waitConfirmation: boolean
   ): Promise<string> {
-    const encoded = transaction.toString('base64');
-
     const mode = this.mevProtection ? 'sandwichMitigation' : 'fast';
-    // Auth in URL param ?auth=token&mode=...
-    let url = `${this.endpoint}?mode=${mode}`;
-    if (this.authToken) {
-      url = `${this.endpoint}?auth=${this.authToken}&mode=${mode}`;
-    }
-
-    // Body is raw base64 string, Content-Type: text/plain. BlockRazor HTTP
-    // commonly returns the signature as plain text rather than JSON.
-    const result = (await this.postRaw(url, encoded)) as any;
+    const headers: Record<string, string> = {};
+    if (this.authToken) headers.apikey = this.authToken;
+    const result = await this.post(this.endpoint, {
+      transaction: transaction.toString('base64'),
+      mode,
+      safeWindow: 3,
+      revertProtection: false,
+    }, headers);
     return extractSubmitSignature(result, signatureFromSerializedTransaction(transaction), true);
   }
 
@@ -1084,6 +1297,62 @@ export class BlockRazorClient extends BaseClient {
   minTipSol(): number {
     return MIN_TIP_BLOCK_RAZOR;
   }
+}
+
+export class BlockRazorGrpcClient extends BaseClient {
+  private readonly tipAccounts = BLOCK_RAZOR_TIP_ACCOUNTS;
+  private readonly client: BlockRazorGrpcStub;
+
+  constructor(
+    private readonly rpcUrl: string,
+    endpoint: string,
+    private readonly authToken?: string,
+    private readonly mevProtection = false,
+  ) {
+    super();
+    const ClientConstructor = grpc.makeGenericClientConstructor(blockRazorGrpcDefinition, 'Server') as unknown as new (
+      address: string,
+      credentials: grpc.ChannelCredentials,
+      options?: grpc.ClientOptions,
+    ) => BlockRazorGrpcStub;
+    const target = endpoint.replace(/^https?:\/\//, '');
+    this.client = new ClientConstructor(target, grpc.credentials.createInsecure(), {
+      'grpc.keepalive_time_ms': 30_000,
+      'grpc.keepalive_timeout_ms': 3_000,
+    });
+  }
+
+  async sendTransaction(tradeType: TradeType, transaction: Buffer, waitConfirmation: boolean): Promise<string> {
+    const metadata = new grpc.Metadata();
+    if (this.authToken) metadata.set('apikey', this.authToken);
+    const mode = this.mevProtection ? 'sandwichMitigation' : 'fast';
+    return new Promise<string>((resolve, reject) => {
+      this.client.sendBinaryTransaction({
+        binaryTransaction: transaction,
+        mode,
+        safeWindow: 3,
+        revertProtection: false,
+      }, metadata, { deadline: Date.now() + 3000 }, (error, response) => {
+        if (error) {
+          if (error.code === grpc.status.UNAUTHENTICATED) reject(new TradeError(401, error.message, error));
+          else if (error.code === grpc.status.PERMISSION_DENIED) reject(new TradeError(403, error.message, error));
+          else if (error.code === grpc.status.INVALID_ARGUMENT) reject(new TradeError(400, error.message, error));
+          else if (error.code === grpc.status.RESOURCE_EXHAUSTED) reject(new TradeError(429, error.message, error));
+          else reject(error);
+          return;
+        }
+        try {
+          resolve(extractSubmitSignature(response));
+        } catch (parseError) {
+          reject(parseError);
+        }
+      });
+    });
+  }
+
+  getTipAccount(): string { return randomChoice(this.tipAccounts); }
+  getSwqosType(): SwqosType { return SwqosType.BlockRazor; }
+  minTipSol(): number { return MIN_TIP_BLOCK_RAZOR; }
 }
 
 // ===== Astralane Client =====
@@ -1135,6 +1404,7 @@ export class AstralaneQuicClient implements SwqosClient {
   private readonly tipAccounts = ASTRALANE_TIP_ACCOUNTS;
   private readonly host: string;
   private readonly port: number;
+  private readonly sender: PersistentQuicSender;
 
   constructor(
     private readonly rpcUrl: string,
@@ -1144,6 +1414,11 @@ export class AstralaneQuicClient implements SwqosClient {
     const lastColon = endpoint.lastIndexOf(':');
     this.host = lastColon >= 0 ? endpoint.slice(0, lastColon) : endpoint;
     this.port = lastColon >= 0 ? parseInt(endpoint.slice(lastColon + 1), 10) : 7000;
+    this.sender = new PersistentQuicSender(this.host, this.port, 'astralane', {
+      alpn: 'astralane-tpu',
+      commonName: this.authToken,
+      algorithm: 'ecdsa',
+    });
   }
 
   async sendTransaction(
@@ -1154,11 +1429,21 @@ export class AstralaneQuicClient implements SwqosClient {
     if (transaction.length > 1232) {
       throw new TradeError(400, `Astralane QUIC transaction too large: ${transaction.length} > 1232`);
     }
-    await sendViaQUIC(this.host, this.port, 'astralane', new Uint8Array(transaction), {
-      alpn: 'astralane-tpu',
-      commonName: this.authToken,
-      algorithm: 'ecdsa',
-    });
+    try {
+      await this.sender.send(new Uint8Array(transaction));
+    } catch (error) {
+      if (error instanceof TradeError) throw error;
+      const value = error as { errorCode?: unknown; applicationCode?: unknown } | undefined;
+      const applicationCode = value?.applicationCode ?? value?.errorCode;
+      if (applicationCode === 1 || applicationCode === 1n) {
+        throw new TradeError(401, 'Astralane QUIC rejected the API key', error as Error);
+      }
+      if (applicationCode === 2 || applicationCode === 2n) {
+        throw new TradeError(429, 'Astralane QUIC connection limit exceeded', error as Error);
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      throw new TradeError(503, `Astralane QUIC transport error: ${message}`, error as Error);
+    }
     return signatureFromSerializedTransaction(transaction);
   }
 
@@ -1415,20 +1700,20 @@ export class DefaultClient extends BaseClient {
  *
  * Install optional deps:  npm install @matrixai/quic
  */
-async function sendViaQUIC(
+interface QuicSenderOptions {
+  alpn?: string;
+  commonName?: string;
+  algorithm?: string;
+  key?: string;
+  cert?: string;
+}
+
+async function createMatrixQuicClient(
   host: string,
   port: number,
   serverName: string,
-  txBytes: Uint8Array,
-  options: {
-    alpn?: string;
-    commonName?: string;
-    algorithm?: string;
-    key?: string;
-    cert?: string;
-  } = {},
-): Promise<void> {
-  // Dynamic imports so the file compiles/runs even without the optional packages
+  options: QuicSenderOptions = {},
+): Promise<any> {
   let QUICClient: any;
   try {
     ({ QUICClient } = await import('@matrixai/quic'));
@@ -1449,24 +1734,88 @@ async function sendViaQUIC(
     cert = pems.cert;
   }
 
-  const client = await QUICClient.createQUICClient({
+  const nodeCrypto = await import('crypto');
+  return QUICClient.createQUICClient({
     host,
     port,
+    serverName,
+    crypto: {
+      ops: {
+        randomBytes: async (data: ArrayBuffer) => {
+          nodeCrypto.randomFillSync(Buffer.from(data));
+        },
+      },
+    },
     config: {
       key,
       cert,
       verifyPeer: false,
       applicationProtos: [options.alpn ?? 'solana-tpu'],
       tlsVersion: 'tlsv13',
-      serverName,
+      keepAliveIntervalTime: 25_000,
+      maxIdleTimeout: 30_000,
     },
   });
+}
+
+async function writeMatrixQuicStream(client: any, txBytes: Uint8Array): Promise<void> {
+  const stream = client.connection.newStream('uni');
+  const writer = stream.writable.getWriter();
+  await writer.write(txBytes);
+  await writer.close();
+}
+
+class PersistentQuicSender {
+  private client?: any;
+  private connectPromise?: Promise<any>;
+
+  constructor(
+    private readonly host: string,
+    private readonly port: number,
+    private readonly serverName: string,
+    private readonly options: QuicSenderOptions,
+  ) {}
+
+  private async connect(): Promise<any> {
+    if (this.client) return this.client;
+    this.connectPromise ??= createMatrixQuicClient(this.host, this.port, this.serverName, this.options);
+    try {
+      this.client = await this.connectPromise;
+      return this.client;
+    } finally {
+      this.connectPromise = undefined;
+    }
+  }
+
+  private async invalidate(): Promise<void> {
+    const client = this.client;
+    this.client = undefined;
+    if (client) {
+      try { await client.destroy(); } catch { /* already closed */ }
+    }
+  }
+
+  async send(txBytes: Uint8Array): Promise<void> {
+    try {
+      await writeMatrixQuicStream(await this.connect(), txBytes);
+    } catch {
+      await this.invalidate();
+      await writeMatrixQuicStream(await this.connect(), txBytes);
+    }
+  }
+}
+
+async function sendViaQUIC(
+  host: string,
+  port: number,
+  serverName: string,
+  txBytes: Uint8Array,
+  options: QuicSenderOptions = {},
+): Promise<void> {
+  const client = await createMatrixQuicClient(host, port, serverName, options);
 
   try {
-    const stream = client.connection.newStream('uni');
-    const writer = stream.writable.getWriter();
-    await writer.write(txBytes);
-    await writer.close();
+    await writeMatrixQuicStream(client, txBytes);
     // Brief delay to allow the stack to flush before closing
     await new Promise(resolve => setTimeout(resolve, 50));
   } finally {
@@ -1905,7 +2254,18 @@ export class ClientFactory {
 
       case SwqosType.Temporal: {
         const endpoint = config.customUrl || TEMPORAL_ENDPOINTS[region];
-        return new TemporalClient(rpcUrl, endpoint, config.apiKey);
+        if (config.customUrl && config.transport === undefined) {
+          return new TemporalClient(rpcUrl, endpoint, config.apiKey);
+        }
+        if (config.transport === SwqosTransport.Http) {
+          return new TemporalClient(rpcUrl, endpoint, config.apiKey);
+        }
+        if (config.transport === SwqosTransport.Grpc) {
+          throw new TradeError(400, 'Temporal does not provide a gRPC transaction-submission API');
+        }
+        const quic = new TemporalQuicClient(rpcUrl, endpoint, config.apiKey);
+        if (config.transport === SwqosTransport.Quic) return quic;
+        return new FallbackSwqosClient(quic, new TemporalClient(rpcUrl, endpoint, config.apiKey));
       }
 
       case SwqosType.FlashBlock: {
@@ -1936,12 +2296,30 @@ export class ClientFactory {
       }
 
       case SwqosType.BlockRazor: {
-        const endpoint = config.customUrl || BLOCK_RAZOR_ENDPOINTS[region];
-        return new BlockRazorClient(rpcUrl, endpoint, config.apiKey, config.mevProtection ?? false);
+        const httpEndpoint = config.customUrl || BLOCK_RAZOR_ENDPOINTS[region];
+        if (config.customUrl && config.transport === undefined) {
+          return new BlockRazorClient(rpcUrl, httpEndpoint, config.apiKey, config.mevProtection ?? false);
+        }
+        if (config.transport === SwqosTransport.Http) {
+          return new BlockRazorClient(rpcUrl, httpEndpoint, config.apiKey, config.mevProtection ?? false);
+        }
+        if (config.transport === SwqosTransport.Quic) {
+          throw new TradeError(400, 'BlockRazor does not provide a QUIC transaction-submission API');
+        }
+        const grpcEndpoint = config.customUrl || BLOCK_RAZOR_GRPC_ENDPOINTS[region];
+        const grpcClient = new BlockRazorGrpcClient(rpcUrl, grpcEndpoint, config.apiKey, config.mevProtection ?? false);
+        if (config.transport === SwqosTransport.Grpc) return grpcClient;
+        return new FallbackSwqosClient(
+          grpcClient,
+          new BlockRazorClient(rpcUrl, httpEndpoint, config.apiKey, config.mevProtection ?? false),
+        );
       }
 
       case SwqosType.Astralane: {
         const baseEndpoint = config.customUrl || ASTRALANE_ENDPOINTS[region];
+        if (config.customUrl && config.astralaneTransport === undefined) {
+          return new AstralaneClient(rpcUrl, baseEndpoint, config.apiKey);
+        }
         if (config.astralaneTransport === AstralaneTransport.Quic) {
           let endpoint: string;
           const port = config.mevProtection ? 9000 : 7000;
@@ -1961,6 +2339,13 @@ export class ClientFactory {
           config.astralaneTransport === AstralaneTransport.Plain
             ? baseEndpoint.replace('/irisb', '/iris')
             : baseEndpoint;
+        if (config.astralaneTransport === undefined) {
+          const port = config.mevProtection ? 9000 : 7000;
+          return new FallbackSwqosClient(
+            new AstralaneQuicClient(rpcUrl, `${ASTRALANE_QUIC_HOSTS[region]}:${port}`, config.apiKey || ''),
+            new AstralaneClient(rpcUrl, endpoint, config.apiKey),
+          );
+        }
         return new AstralaneClient(rpcUrl, endpoint, config.apiKey);
       }
 

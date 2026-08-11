@@ -17,6 +17,7 @@ import {
   TradeType,
   TradeTokenType,
   TradeConfigBuilder,
+  TradeError,
   TradingClient,
   MiddlewareManager,
   InstructionProcessor,
@@ -52,12 +53,16 @@ import {
 import {
   ASTRALANE_ENDPOINTS,
   AstralaneClient as SenderAstralaneClient,
+  AstralaneQuicClient as SenderAstralaneQuicClient,
   ASTRALANE_QUIC_HOSTS,
   BLOXROUTE_ENDPOINTS,
   BloxrouteClient as SenderBloxrouteClient,
   BlockRazorClient as SenderBlockRazorClient,
+  BlockRazorGrpcClient as SenderBlockRazorGrpcClient,
   BLOCK_RAZOR_ENDPOINTS,
   ClientFactory as SenderClientFactory,
+  encodeTemporalBatch,
+  FallbackSwqosClient,
   MIN_TIP_DEFAULT,
   MIN_TIP_SOLAMI,
   NODE1_ENDPOINTS,
@@ -65,6 +70,8 @@ import {
   SolamiClient as SenderSolamiClient,
   SPEEDLANDING_ENDPOINTS,
   STELLIUM_ENDPOINTS,
+  TemporalClient as SenderTemporalClient,
+  TemporalQuicClient as SenderTemporalQuicClient,
 } from '../swqos/clients';
 import {
   AstralaneClient as ProviderAstralaneClient,
@@ -585,8 +592,13 @@ describe('Solami SWQOS parity', () => {
     const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
       expect(url).toContain('/v2/sendTransaction');
       expect(url).not.toContain('/api/v1/submit');
-      expect(init.headers).toMatchObject({ 'Content-Type': 'text/plain' });
-      expect(init.body).toBe(tx.toString('base64'));
+      expect(init.headers).toMatchObject({ 'Content-Type': 'application/json', apikey: 'token' });
+      expect(JSON.parse(init.body as string)).toEqual({
+        transaction: tx.toString('base64'),
+        mode: 'fast',
+        safeWindow: 3,
+        revertProtection: false,
+      });
       return new Response(signature, { status: 200 });
     });
     globalThis.fetch = fetchMock as any;
@@ -599,7 +611,7 @@ describe('Solami SWQOS parity', () => {
 
     const result = await provider.submitTransaction(tx);
 
-    expect(result.success).toBe(true);
+    expect(result.success, result.error).toBe(true);
     expect(result.signature).toBe(signature);
   });
 
@@ -698,7 +710,7 @@ describe('SWQOS endpoint parity', () => {
     expect(MIN_TIP_DEFAULT).toBe(0.00001);
     expect(BLOXROUTE_ENDPOINTS[SwqosRegion.Singapore]).toBe('https://tokyo.solana.dex.blxrbdn.com');
     expect(NODE1_ENDPOINTS[SwqosRegion.Singapore]).toBe('http://tk.node1.me');
-    expect(BLOCK_RAZOR_ENDPOINTS[SwqosRegion.Singapore]).toContain('tokyo.solana.blockrazor');
+    expect(BLOCK_RAZOR_ENDPOINTS[SwqosRegion.Singapore]).toContain('singapore.solana.blockrazor');
     expect(ASTRALANE_ENDPOINTS[SwqosRegion.SLC]).toBe('http://la.gateway.astralane.io/irisb');
     expect(ASTRALANE_ENDPOINTS[SwqosRegion.Singapore]).toBe('http://sg.gateway.astralane.io/irisb');
     expect(ASTRALANE_QUIC_HOSTS[SwqosRegion.Singapore]).toBe('sg.gateway.astralane.io');
@@ -1196,8 +1208,13 @@ describe('Primary SWQOS clients (Rust parity)', () => {
   it('BlockRazor HTTP accepts plain-text signature responses', async () => {
     const signature = 'yfK1R3WTSB1111111111111111111111111111111111111111111111111111';
     const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
-      expect(init.headers).toMatchObject({ 'Content-Type': 'text/plain' });
-      expect(init.body).toBe(dummySignedTransactionBytes().toString('base64'));
+      expect(init.headers).toMatchObject({ 'Content-Type': 'application/json', apikey: 'token' });
+      expect(JSON.parse(init.body as string)).toEqual({
+        transaction: dummySignedTransactionBytes().toString('base64'),
+        mode: 'fast',
+        safeWindow: 3,
+        revertProtection: false,
+      });
       return new Response(signature, { status: 200 });
     });
     globalThis.fetch = fetchMock as any;
@@ -1206,6 +1223,62 @@ describe('Primary SWQOS clients (Rust parity)', () => {
 
     await expect(client.sendTransaction(TradeType.Buy, dummySignedTransactionBytes(), false))
       .resolves.toBe(signature);
+  });
+
+  it('defaults to provider-preferred transport chains', () => {
+    const temporal = SenderClientFactory.createClient(
+      { type: SwqosType.Temporal, apiKey: 'token' },
+      'http://rpc',
+    );
+    const blockrazor = SenderClientFactory.createClient(
+      { type: SwqosType.BlockRazor, apiKey: 'token' },
+      'http://rpc',
+    );
+    const astralane = SenderClientFactory.createClient(
+      { type: SwqosType.Astralane, apiKey: 'token' },
+      'http://rpc',
+    );
+
+    expect(temporal).toBeInstanceOf(FallbackSwqosClient);
+    expect((temporal as FallbackSwqosClient).primary).toBeInstanceOf(SenderTemporalQuicClient);
+    expect((temporal as FallbackSwqosClient).fallback).toBeInstanceOf(SenderTemporalClient);
+    expect(blockrazor).toBeInstanceOf(FallbackSwqosClient);
+    expect((blockrazor as FallbackSwqosClient).primary).toBeInstanceOf(SenderBlockRazorGrpcClient);
+    expect((blockrazor as FallbackSwqosClient).fallback).toBeInstanceOf(SenderBlockRazorClient);
+    expect(astralane).toBeInstanceOf(FallbackSwqosClient);
+    expect((astralane as FallbackSwqosClient).primary).toBeInstanceOf(SenderAstralaneQuicClient);
+    expect((astralane as FallbackSwqosClient).fallback).toBeInstanceOf(SenderAstralaneClient);
+  });
+
+  it('encodes Temporal batches with big-endian uint16 lengths', () => {
+    const first = Buffer.alloc(66, 1);
+    const second = Buffer.alloc(67, 2);
+    expect(encodeTemporalBatch([first, second])).toEqual(Buffer.concat([
+      Buffer.from([0, first.length]), first,
+      Buffer.from([0, second.length]), second,
+    ]));
+  });
+
+  it('falls back for service failures but not authentication or unclassified errors', async () => {
+    const fallback = {
+      sendTransaction: vi.fn(async () => 'fallback'),
+      sendTransactions: vi.fn(async () => ['fallback']),
+      getTipAccount: () => '',
+      getSwqosType: () => SwqosType.Temporal,
+      minTipSol: () => 0,
+    };
+    const primary = (error: unknown) => ({
+      ...fallback,
+      sendTransaction: vi.fn(async () => { throw error; }),
+      sendTransactions: vi.fn(async () => { throw error; }),
+    });
+
+    await expect(new FallbackSwqosClient(primary(new TradeError(503, 'down')), fallback)
+      .sendTransaction(TradeType.Buy, Buffer.alloc(66), false)).resolves.toBe('fallback');
+    await expect(new FallbackSwqosClient(primary(new TradeError(401, 'bad key')), fallback)
+      .sendTransaction(TradeType.Buy, Buffer.alloc(66), false)).rejects.toThrow('bad key');
+    await expect(new FallbackSwqosClient(primary(new Error('application bug')), fallback)
+      .sendTransaction(TradeType.Buy, Buffer.alloc(66), false)).rejects.toThrow('application bug');
   });
 
   it('Astralane binary HTTP sends raw transaction bytes instead of JSON-RPC', async () => {

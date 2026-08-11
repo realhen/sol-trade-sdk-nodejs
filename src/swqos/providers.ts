@@ -296,7 +296,7 @@ class SenderBackedProviderClient extends SwqosClient {
         region: (this.config.region ?? SwqosRegion.Default) as any,
         customUrl: this.config.url,
         apiKey: this.config.apiKey,
-        mevProtection: this.config.mevProtection !== MevProtectionLevel.None,
+        mevProtection: (this.config.mevProtection ?? MevProtectionLevel.None) !== MevProtectionLevel.None,
         transport: this.config.transport,
         astralaneTransport: this.config.astralaneTransport,
         swqosOnly: this.config.swqosOnly,
@@ -830,7 +830,14 @@ export class BlockRazorClient extends SwqosClient {
   async submitTransaction(transaction: Buffer, _tip = 0): Promise<TransactionResult> {
     await this.rateLimitCheck();
     const startTime = Date.now();
-    const client = new SenderBlockRazorClient('', this.endpoint, this.config.apiKey);
+    const client = SenderClientFactory.createClient({
+      type: SwqosType.BlockRazor as any,
+      region: (this.config.region ?? SwqosRegion.Default) as any,
+      customUrl: this.config.url,
+      apiKey: this.config.apiKey,
+      mevProtection: (this.config.mevProtection ?? MevProtectionLevel.None) !== MevProtectionLevel.None,
+      transport: this.config.transport,
+    }, '');
     return submitViaSenderClient(
       'BlockRazor',
       startTime,
@@ -859,7 +866,14 @@ export class AstralaneClient extends SwqosClient {
   async submitTransaction(transaction: Buffer, _tip = 0): Promise<TransactionResult> {
     await this.rateLimitCheck();
     const startTime = Date.now();
-    const client = new SenderAstralaneClient('', this.endpoint, this.config.apiKey);
+    const client = SenderClientFactory.createClient({
+      type: SwqosType.Astralane as any,
+      region: (this.config.region ?? SwqosRegion.Default) as any,
+      customUrl: this.config.url,
+      apiKey: this.config.apiKey,
+      mevProtection: (this.config.mevProtection ?? MevProtectionLevel.None) !== MevProtectionLevel.None,
+      astralaneTransport: this.config.astralaneTransport,
+    }, '');
     return submitViaSenderClient(
       'Astralane',
       startTime,
@@ -1511,8 +1525,8 @@ export class SwqosClientFactory {
     [SwqosType.Temporal]: SenderBackedProviderClient,
     [SwqosType.Node1]: SenderBackedProviderClient,
     [SwqosType.FlashBlock]: SenderBackedProviderClient,
-    [SwqosType.BlockRazor]: BlockRazorClient,
-    [SwqosType.Astralane]: AstralaneClient,
+    [SwqosType.BlockRazor]: SenderBackedProviderClient,
+    [SwqosType.Astralane]: SenderBackedProviderClient,
     [SwqosType.Stellium]: SenderBackedProviderClient,
     [SwqosType.Lightspeed]: SenderBackedProviderClient,
     [SwqosType.Soyas]: SenderBackedProviderClient,
