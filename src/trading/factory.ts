@@ -85,6 +85,7 @@ export interface PumpSwapParams {
   poolQuoteTokenAccount?: PublicKey;
   poolBaseTokenReserves?: bigint;
   poolQuoteTokenReserves?: bigint;
+  virtualQuoteReserves?: bigint;
   coinCreatorVaultAta?: PublicKey;
   coinCreatorVaultAuthority?: PublicKey;
   baseTokenProgram?: PublicKey;

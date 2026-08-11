@@ -25,7 +25,7 @@ import {
   computePumpSwapFeeBasisPoints,
   type PumpSwapPool,
 } from '../instruction/pumpswap';
-import type { PumpSwapFeeBasisPoints } from '../calc';
+import { effectiveQuoteReserves, type PumpSwapFeeBasisPoints } from '../calc';
 import {
   fetchBonkPoolState,
   getBonkPoolPDA,
@@ -233,6 +233,7 @@ export class PumpSwapParams {
     public poolQuoteTokenAccount: PublicKey,
     public poolBaseTokenReserves: bigint,
     public poolQuoteTokenReserves: bigint,
+    public virtualQuoteReserves: bigint,
     public coinCreatorVaultAta: PublicKey,
     public coinCreatorVaultAuthority: PublicKey,
     public baseTokenProgram: PublicKey,
@@ -249,6 +250,10 @@ export class PumpSwapParams {
     public poolCreator: PublicKey = PublicKey.default,
     public baseMintSupply: bigint | null = null
   ) {}
+
+  effectiveQuoteReserves(): bigint {
+    return effectiveQuoteReserves(this.poolQuoteTokenReserves, this.virtualQuoteReserves);
+  }
 
   static async fromPoolAddressByRpc(
     connection: Connection,
@@ -314,13 +319,17 @@ export class PumpSwapParams {
     const baseMintSupply = mintAccount?.value?.data
       ? decodeMintSupply(Buffer.from(mintAccount.value.data))
       : null;
+    const effectiveQuoteBalance = effectiveQuoteReserves(
+      balances.quoteBalance,
+      pool.virtualQuoteReserves
+    );
     const rawFeeBasisPoints = feeBasisPointsOverride ?? computePumpSwapFeeBasisPoints(
       await fetchPumpSwapFeeConfig(rpc).catch(() => null),
       pool.creator,
       pool.baseMint,
       baseMintSupply,
       balances.baseBalance,
-      balances.quoteBalance
+      effectiveQuoteBalance
     );
     const feeBasisPoints = {
       ...rawFeeBasisPoints,
@@ -336,7 +345,8 @@ export class PumpSwapParams {
       pool.poolQuoteTokenAccount,
       balances.baseBalance,
       balances.quoteBalance,
-      getCoinCreatorVaultAta(pool.coinCreator, pool.quoteMint),
+      pool.virtualQuoteReserves,
+      getCoinCreatorVaultAta(pool.coinCreator, pool.quoteMint, quoteTokenProgram),
       getCoinCreatorVaultAuthority(pool.coinCreator),
       baseTokenProgram,
       quoteTokenProgram,

@@ -20,7 +20,7 @@ import {
   createCloseAccountInstruction,
   NATIVE_MINT,
   createSyncNativeInstruction,
-} from "@solana/spl-token";
+} from "../common/spl-token";
 
 // ============================================
 // Program IDs and Constants - from Rust src/instruction/utils/bonk.rs

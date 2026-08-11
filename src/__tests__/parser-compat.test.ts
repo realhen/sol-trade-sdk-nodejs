@@ -70,6 +70,7 @@ describe('decoded event parameter adapter helpers', () => {
       pool_quote_token_account: PublicKey.unique(),
       pool_base_token_reserves: 10n,
       pool_quote_token_reserves: 20n,
+      virtual_quote_reserves: -7n,
       coin_creator_vault_ata: vault,
       coin_creator_vault_authority: authority,
       base_token_program: CONSTANTS.TOKEN_PROGRAM,
@@ -78,6 +79,34 @@ describe('decoded event parameter adapter helpers', () => {
 
     expect(params.coinCreatorVaultAta.toBase58()).toBe(vault.toBase58());
     expect(params.coinCreatorVaultAuthority.toBase58()).toBe(authority.toBase58());
+    expect(params.poolBaseTokenReserves).toBe(10n);
+    expect(params.poolQuoteTokenReserves).toBe(20n);
+    expect(params.virtualQuoteReserves).toBe(-7n);
+  });
+
+  it('preserves PumpSwap u64 reserves beyond the JavaScript safe integer range', () => {
+    const largeReserve = (BigInt(1) << BigInt(53)) + BigInt(123);
+    const params = pumpSwapParamsFromParserTrade({
+      pool_base_token_reserves: largeReserve.toString(),
+      pool_quote_token_reserves: largeReserve,
+      virtual_quote_reserves: '-123',
+    });
+
+    expect(params.poolBaseTokenReserves).toBe(largeReserve);
+    expect(params.poolQuoteTokenReserves).toBe(largeReserve);
+    expect(params.virtualQuoteReserves).toBe(-123n);
+  });
+
+  it('rejects unsafe number and out-of-range PumpSwap event values', () => {
+    expect(() => pumpSwapParamsFromParserTrade({
+      pool_quote_token_reserves: Number.MAX_SAFE_INTEGER + 1,
+    })).toThrow('must be provided as bigint or string');
+    expect(() => pumpSwapParamsFromParserTrade({
+      virtual_quote_reserves: BigInt(1) << BigInt(127),
+    })).toThrow('outside the signed i128 range');
+    expect(() => pumpSwapParamsFromParserTrade({
+      pool_quote_token_reserves: BigInt(1) << BigInt(64),
+    })).toThrow('outside the u64 range');
   });
 
   it('maps PumpSwap fee basis points from decoded events', () => {

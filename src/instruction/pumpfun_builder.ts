@@ -22,7 +22,7 @@ import {
   createCloseAccountInstruction,
   createSyncNativeInstruction,
   NATIVE_MINT,
-} from "@solana/spl-token";
+} from "../common/spl-token";
 
 const SOL_TOKEN_ACCOUNT = new PublicKey("So11111111111111111111111111111111111111111");
 

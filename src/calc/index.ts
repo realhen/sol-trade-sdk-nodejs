@@ -14,6 +14,8 @@ import BN from 'bn.js';
 
 const MAX_SAFE_BIGINT = BigInt('18446744073709551615'); // 2^64 - 1
 const MAX_BASIS_POINTS = BigInt(10000);
+const I128_MIN_BIGINT = -(BigInt(1) << BigInt(127));
+const I128_MAX_BIGINT = (BigInt(1) << BigInt(127)) - BigInt(1);
 
 /// Maximum slippage in basis points (99.99% = 9999 bps)
 /// This prevents the wrap amount from doubling when slippage is 100%
@@ -269,6 +271,39 @@ export interface SellQuoteInputResult {
   minQuote: bigint;
 }
 
+/** Compute the signed PumpSwap quote reserve used for pricing. */
+export function effectiveQuoteReserves(
+  quoteVaultBalance: bigint,
+  virtualQuoteReserves: bigint
+): bigint {
+  if (quoteVaultBalance < BigInt(0) || quoteVaultBalance > MAX_SAFE_BIGINT) {
+    throw new CalculationError(`Invalid u64 quote vault balance: ${quoteVaultBalance}`);
+  }
+  if (virtualQuoteReserves < I128_MIN_BIGINT || virtualQuoteReserves > I128_MAX_BIGINT) {
+    throw new CalculationError(
+      `Invalid signed i128 virtual quote reserves: ${virtualQuoteReserves}`
+    );
+  }
+  const effective = quoteVaultBalance + virtualQuoteReserves;
+  if (effective <= BigInt(0) || effective > MAX_SAFE_BIGINT) {
+    throw new CalculationError(
+      `Invalid effective quote reserves: raw=${quoteVaultBalance}, virtual=${virtualQuoteReserves}`
+    );
+  }
+  return effective;
+}
+
+function pumpSwapCeilDiv(value: bigint, divisor: bigint, name: string): bigint {
+  if (value < BigInt(0) || divisor <= BigInt(0)) {
+    throw new CalculationError(`Invalid ${name} division`);
+  }
+  const result = (value + divisor - BigInt(1)) / divisor;
+  if (result > MAX_SAFE_BIGINT) {
+    throw new CalculationError(`Calculated ${name} exceeds u64`);
+  }
+  return result;
+}
+
 /**
  * Calculate quote needed to buy base tokens on PumpSwap
  */
@@ -277,6 +312,7 @@ export function buyBaseInputInternal(
   slippageBasisPoints: bigint,
   baseReserve: bigint,
   quoteReserve: bigint,
+  virtualQuoteReserves: bigint,
   hasCoinCreator: boolean
 ): BuyBaseInputResult {
   return buyBaseInputInternalWithFees(
@@ -284,6 +320,7 @@ export function buyBaseInputInternal(
     slippageBasisPoints,
     baseReserve,
     quoteReserve,
+    virtualQuoteReserves,
     legacyPumpSwapFeeBasisPoints(hasCoinCreator)
   );
 }
@@ -293,23 +330,25 @@ export function buyBaseInputInternalWithFees(
   slippageBasisPoints: bigint,
   baseReserve: bigint,
   quoteReserve: bigint,
+  virtualQuoteReserves: bigint,
   feeBasisPoints: PumpSwapFeeBasisPoints
 ): BuyBaseInputResult {
   if (baseReserve === BigInt(0) || quoteReserve === BigInt(0)) {
     throw new Error('Invalid input: reserves cannot be zero');
   }
+  const effectiveQuoteReserve = effectiveQuoteReserves(quoteReserve, virtualQuoteReserves);
   if (base > baseReserve) {
     throw new Error('Cannot buy more base tokens than pool reserves');
   }
 
-  const numerator = quoteReserve * base;
+  const numerator = effectiveQuoteReserve * base;
   const denominator = baseReserve - base;
 
   if (denominator === BigInt(0)) {
     throw new Error('Pool would be depleted');
   }
 
-  const quoteAmountIn = ceilDiv(numerator, denominator);
+  const quoteAmountIn = pumpSwapCeilDiv(numerator, denominator, 'raw quote amount');
 
   const lpFee = computeFee(quoteAmountIn, feeBasisPoints.lpFeeBasisPoints);
   const protocolFee = computeFee(quoteAmountIn, feeBasisPoints.protocolFeeBasisPoints);
@@ -333,6 +372,7 @@ export function buyQuoteInputInternal(
   slippageBasisPoints: bigint,
   baseReserve: bigint,
   quoteReserve: bigint,
+  virtualQuoteReserves: bigint,
   hasCoinCreator: boolean
 ): BuyQuoteInputResult {
   return buyQuoteInputInternalWithFees(
@@ -340,6 +380,7 @@ export function buyQuoteInputInternal(
     slippageBasisPoints,
     baseReserve,
     quoteReserve,
+    virtualQuoteReserves,
     legacyPumpSwapFeeBasisPoints(hasCoinCreator)
   );
 }
@@ -349,11 +390,13 @@ export function buyQuoteInputInternalWithFees(
   slippageBasisPoints: bigint,
   baseReserve: bigint,
   quoteReserve: bigint,
+  virtualQuoteReserves: bigint,
   feeBasisPoints: PumpSwapFeeBasisPoints
 ): BuyQuoteInputResult {
   if (baseReserve === BigInt(0) || quoteReserve === BigInt(0)) {
     throw new Error('Invalid input: reserves cannot be zero');
   }
+  const effectiveQuoteReserve = effectiveQuoteReserves(quoteReserve, virtualQuoteReserves);
 
   const totalFeeBps =
     feeBasisPoints.lpFeeBasisPoints +
@@ -375,7 +418,7 @@ export function buyQuoteInputInternalWithFees(
   const inputAmount = effectiveQuote > BigInt(0) ? effectiveQuote - BigInt(1) : BigInt(0);
 
   const numerator = baseReserve * inputAmount;
-  const denominatorEffective = quoteReserve + inputAmount;
+  const denominatorEffective = effectiveQuoteReserve + inputAmount;
 
   if (denominatorEffective === BigInt(0)) {
     throw new Error('Pool would be depleted');
@@ -399,6 +442,7 @@ export function sellBaseInputInternal(
   slippageBasisPoints: bigint,
   baseReserve: bigint,
   quoteReserve: bigint,
+  virtualQuoteReserves: bigint,
   hasCoinCreator: boolean
 ): SellBaseInputResult {
   return sellBaseInputInternalWithFees(
@@ -406,6 +450,7 @@ export function sellBaseInputInternal(
     slippageBasisPoints,
     baseReserve,
     quoteReserve,
+    virtualQuoteReserves,
     legacyPumpSwapFeeBasisPoints(hasCoinCreator)
   );
 }
@@ -415,14 +460,16 @@ export function sellBaseInputInternalWithFees(
   slippageBasisPoints: bigint,
   baseReserve: bigint,
   quoteReserve: bigint,
+  virtualQuoteReserves: bigint,
   feeBasisPoints: PumpSwapFeeBasisPoints
 ): SellBaseInputResult {
   if (baseReserve === BigInt(0) || quoteReserve === BigInt(0)) {
     throw new Error('Invalid input: reserves cannot be zero');
   }
+  const effectiveQuoteReserve = effectiveQuoteReserves(quoteReserve, virtualQuoteReserves);
 
   const quoteAmountOut =
-    (quoteReserve * base) / (baseReserve + base);
+    (effectiveQuoteReserve * base) / (baseReserve + base);
 
   const lpFee = computeFee(quoteAmountOut, feeBasisPoints.lpFeeBasisPoints);
   const protocolFee = computeFee(quoteAmountOut, feeBasisPoints.protocolFeeBasisPoints);
@@ -431,6 +478,10 @@ export function sellBaseInputInternalWithFees(
   const totalFees = lpFee + protocolFee + coinCreatorFee;
   if (totalFees > quoteAmountOut) {
     throw new Error('Fees exceed output');
+  }
+  const quoteVaultOutflow = quoteAmountOut - lpFee;
+  if (quoteVaultOutflow > quoteReserve) {
+    throw new Error('Insufficient real quote reserves to cover the sell output');
   }
   const finalQuote = quoteAmountOut - totalFees;
   const minQuote = calculateWithSlippageSell(finalQuote, slippageBasisPoints);
@@ -450,6 +501,7 @@ export function sellQuoteInputInternal(
   slippageBasisPoints: bigint,
   baseReserve: bigint,
   quoteReserve: bigint,
+  virtualQuoteReserves: bigint,
   hasCoinCreator: boolean
 ): SellQuoteInputResult {
   return sellQuoteInputInternalWithFees(
@@ -457,6 +509,7 @@ export function sellQuoteInputInternal(
     slippageBasisPoints,
     baseReserve,
     quoteReserve,
+    virtualQuoteReserves,
     legacyPumpSwapFeeBasisPoints(hasCoinCreator)
   );
 }
@@ -466,6 +519,7 @@ export function sellQuoteInputInternalWithFees(
   slippageBasisPoints: bigint,
   baseReserve: bigint,
   quoteReserve: bigint,
+  virtualQuoteReserves: bigint,
   feeBasisPoints: PumpSwapFeeBasisPoints
 ): SellQuoteInputResult {
   if (baseReserve === BigInt(0) || quoteReserve === BigInt(0)) {
@@ -474,6 +528,7 @@ export function sellQuoteInputInternalWithFees(
   if (quote > quoteReserve) {
     throw new Error('Cannot receive more than pool reserves');
   }
+  const effectiveQuoteReserve = effectiveQuoteReserves(quoteReserve, virtualQuoteReserves);
 
   const rawQuote = calculateQuoteAmountOut(
     quote,
@@ -482,13 +537,21 @@ export function sellQuoteInputInternalWithFees(
     feeBasisPoints.coinCreatorFeeBasisPoints
   );
 
-  if (rawQuote >= quoteReserve) {
+
+  const lpFee = computeFee(rawQuote, feeBasisPoints.lpFeeBasisPoints);
+  const quoteVaultOutflow = rawQuote - lpFee;
+  if (quoteVaultOutflow > quoteReserve) {
+    throw new Error('Insufficient real quote reserves to cover the sell output');
+  }
+
+  if (rawQuote >= effectiveQuoteReserve) {
     throw new Error('Invalid input: desired amount exceeds reserve');
   }
 
-  const baseAmountIn = ceilDiv(
+  const baseAmountIn = pumpSwapCeilDiv(
     baseReserve * rawQuote,
-    quoteReserve - rawQuote
+    effectiveQuoteReserve - rawQuote,
+    'base amount'
   );
   const minQuote = calculateWithSlippageSell(quote, slippageBasisPoints);
 
@@ -508,7 +571,14 @@ function calculateQuoteAmountOut(
   const totalFeeBasisPoints =
     lpFeeBasisPoints + protocolFeeBasisPoints + coinCreatorFeeBasisPoints;
   const denominator = BigInt(10000) - totalFeeBasisPoints;
-  return ceilDiv(userQuoteAmountOut * BigInt(10000), denominator);
+  if (denominator <= BigInt(0)) {
+    throw new Error('Total fee basis points must be less than 10,000');
+  }
+  return pumpSwapCeilDiv(
+    userQuoteAmountOut * BigInt(10000),
+    denominator,
+    'quote amount'
+  );
 }
 
 // ===== Bonk Constants =====

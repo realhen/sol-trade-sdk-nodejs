@@ -22,9 +22,14 @@ import {
   PUMPSWAP_SELL_DISCRIMINATOR,
   buildBuyInstructions as buildPumpSwapBuyInstructions,
   buildSellInstructions as buildPumpSwapSellInstructions,
+  getCoinCreatorVaultAta,
   getPumpPoolAuthorityPDA,
   getAssociatedTokenAddress as getPumpSwapAssociatedTokenAddress,
   getPoolV2PDA,
+  decodePool,
+  LEGACY_POOL_SIZE,
+  POOL_SIZE,
+  PUMPSWAP_POOL_DISCRIMINATOR,
   type PumpSwapParams,
 } from '../instruction/pumpswap';
 import {
@@ -62,6 +67,7 @@ function pumpSwapProtocolParams(overrides: Partial<PumpSwapParams> = {}): PumpSw
     poolQuoteTokenAccount: pk(24),
     poolBaseTokenReserves: 1_000_000_000_000n,
     poolQuoteTokenReserves: 4_500_000_000n,
+    virtualQuoteReserves: 0n,
     coinCreatorVaultAta: pk(25),
     coinCreatorVaultAuthority: pk(26),
     baseTokenProgram: CONSTANTS.TOKEN_PROGRAM,
@@ -125,8 +131,10 @@ function poolBytes(pool: {
   coinCreator: PublicKey;
   isMayhemMode: boolean;
   isCashbackCoin: boolean;
+  virtualQuoteReserves?: bigint;
 }): Buffer {
-  const data = Buffer.alloc(8 + 244);
+  const data = Buffer.alloc(8 + (pool.virtualQuoteReserves === undefined ? LEGACY_POOL_SIZE : POOL_SIZE));
+  PUMPSWAP_POOL_DISCRIMINATOR.copy(data, 0);
   let offset = 8;
   data.writeUInt8(pool.poolBump, offset);
   offset += 1;
@@ -151,6 +159,15 @@ function poolBytes(pool: {
   data.writeUInt8(pool.isMayhemMode ? 1 : 0, offset);
   offset += 1;
   data.writeUInt8(pool.isCashbackCoin ? 1 : 0, offset);
+  offset += 1;
+  if (pool.virtualQuoteReserves !== undefined) {
+    const encoded = pool.virtualQuoteReserves < 0n
+      ? (1n << 128n) + pool.virtualQuoteReserves
+      : pool.virtualQuoteReserves;
+    const mask = (1n << 64n) - 1n;
+    data.writeBigUInt64LE(encoded & mask, offset);
+    data.writeBigUInt64LE(encoded >> 64n, offset + 8);
+  }
   return data;
 }
 
@@ -170,6 +187,33 @@ function fakePumpSwapConnection(poolAddress: PublicKey, pool: ReturnType<typeof 
 }
 
 describe('protocol instruction parity', () => {
+  it('decodes current and legacy PumpSwap pool virtual quote reserves', () => {
+    const pool = {
+      poolBump: 1,
+      index: 0,
+      creator: pk(40),
+      baseMint: pk(41),
+      quoteMint: CONSTANTS.WSOL_TOKEN_ACCOUNT,
+      lpMint: pk(42),
+      poolBaseTokenAccount: pk(43),
+      poolQuoteTokenAccount: pk(44),
+      lpSupply: 100n,
+      coinCreator: pk(45),
+      isMayhemMode: false,
+      isCashbackCoin: true,
+    };
+
+    expect(decodePool(poolBytes({ ...pool, virtualQuoteReserves: -123_456n }))?.virtualQuoteReserves)
+      .toBe(-123_456n);
+    expect(decodePool(poolBytes(pool))?.virtualQuoteReserves).toBe(0n);
+    const wrongDiscriminator = poolBytes({ ...pool, virtualQuoteReserves: 0n });
+    wrongDiscriminator.fill(0, 0, 8);
+    expect(decodePool(wrongDiscriminator)).toBeNull();
+    for (let size = LEGACY_POOL_SIZE + 1; size < POOL_SIZE; size += 1) {
+      expect(decodePool(Buffer.alloc(size))).toBeNull();
+    }
+  });
+
   it('uses Raydium CPMM swap_base_out for fixed-output buys', () => {
     const ixs = buildRaydiumCpmmBuyInstructions({
       payer: pk(99),
@@ -460,6 +504,45 @@ describe('protocol instruction parity', () => {
     expect(ix.keys.map((key) => key.pubkey.toBase58())).not.toContain(poolV2);
   });
 
+  it('uses the quote token program for PumpSwap fee vault ATAs', () => {
+    const protocolParams = pumpSwapProtocolParams({
+      quoteTokenProgram: CONSTANTS.TOKEN_PROGRAM_2022,
+    });
+    const ix = buildPumpSwapBuyInstructions({
+      payer: pk(99),
+      inputAmount: 1_000_000n,
+      slippageBasisPoints: 300n,
+      protocolParams,
+      createInputMintAta: false,
+      createOutputMintAta: false,
+      useExactQuoteAmount: true,
+    }).at(-1)!;
+
+    const feeRecipientAta = getPumpSwapAssociatedTokenAddress(
+      ix.keys[9]!.pubkey,
+      protocolParams.quoteMint,
+      CONSTANTS.TOKEN_PROGRAM_2022
+    );
+    expect(ix.keys[10]!.pubkey.toBase58()).toBe(feeRecipientAta.toBase58());
+
+    const protocolExtra = ix.keys.at(-2)!.pubkey;
+    const protocolExtraAta = getPumpSwapAssociatedTokenAddress(
+      protocolExtra,
+      protocolParams.quoteMint,
+      CONSTANTS.TOKEN_PROGRAM_2022
+    );
+    expect(ix.keys.at(-1)!.pubkey.toBase58()).toBe(protocolExtraAta.toBase58());
+
+    const creatorVaultAta = getCoinCreatorVaultAta(
+      protocolParams.coinCreator!,
+      protocolParams.quoteMint,
+      CONSTANTS.TOKEN_PROGRAM_2022
+    );
+    expect(creatorVaultAta.toBase58()).not.toBe(
+      getCoinCreatorVaultAta(protocolParams.coinCreator!, protocolParams.quoteMint).toBase58()
+    );
+  });
+
   it('auto-discovers PumpSwap fee bps in the RPC params helper', async () => {
     const baseMint = pk(31);
     const poolAddress = pk(32);
@@ -485,10 +568,11 @@ describe('protocol instruction parity', () => {
       coinCreator,
       isMayhemMode: false,
       isCashbackCoin: false,
+      virtualQuoteReserves: 100n,
     };
     const balances = new Map<string, bigint>([
       [pool.poolBaseTokenAccount.toBase58(), 1_000n],
-      [pool.poolQuoteTokenAccount.toBase58(), 1_000n],
+      [pool.poolQuoteTokenAccount.toBase58(), 50n],
     ]);
 
     const params = await RpcPumpSwapParams.fromPoolAddressByRpc(
@@ -502,6 +586,8 @@ describe('protocol instruction parity', () => {
       coinCreatorFeeBasisPoints: 75n,
     });
     expect(params.baseMintSupply).toBe(10_000n);
+    expect(params.poolQuoteTokenReserves).toBe(50n);
+    expect(params.virtualQuoteReserves).toBe(100n);
   });
 
   it('preserves manual PumpSwap fee bps in the RPC params helper', async () => {

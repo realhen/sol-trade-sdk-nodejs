@@ -699,8 +699,10 @@ export interface PumpSwapParams {
   quoteMint: PublicKey;
   poolBaseTokenAccount: PublicKey;
   poolQuoteTokenAccount: PublicKey;
-  poolBaseTokenReserves: number;
-  poolQuoteTokenReserves: number;
+  poolBaseTokenReserves: bigint;
+  poolQuoteTokenReserves: bigint;
+  /** Signed i128 from the PumpSwap Pool account or trade event. */
+  virtualQuoteReserves: bigint;
   coinCreatorVaultAta: PublicKey;
   coinCreatorVaultAuthority: PublicKey;
   baseTokenProgram: PublicKey;
@@ -725,6 +727,7 @@ export interface ParserPumpSwapTradeEvent {
   pool_quote_token_account?: string | PublicKey;
   pool_base_token_reserves?: bigint | number | string;
   pool_quote_token_reserves?: bigint | number | string;
+  virtual_quote_reserves?: bigint | number | string;
   coin_creator_vault_ata?: string | PublicKey;
   coin_creator_vault_authority?: string | PublicKey;
   base_token_program?: string | PublicKey;
@@ -740,9 +743,44 @@ export interface ParserPumpSwapTradeEvent {
   is_cashback_coin?: boolean;
 }
 
-function parserU64BigInt(value: bigint | number | string | undefined): bigint {
+const U64_MAX_BIGINT = (BigInt(1) << BigInt(64)) - BigInt(1);
+const I128_MIN_BIGINT = -(BigInt(1) << BigInt(127));
+const I128_MAX_BIGINT = (BigInt(1) << BigInt(127)) - BigInt(1);
+
+function parserIntegerBigInt(
+  value: bigint | number | string | undefined,
+  fieldName: string
+): bigint {
   if (value === undefined || value === null || value === '') return BigInt(0);
+  if (typeof value === 'number' && !Number.isSafeInteger(value)) {
+    throw new TradeError(
+      106,
+      `${fieldName} must be provided as bigint or string outside the JavaScript safe integer range`
+    );
+  }
   return typeof value === 'bigint' ? value : BigInt(value);
+}
+
+function parserU64BigInt(
+  value: bigint | number | string | undefined,
+  fieldName: string
+): bigint {
+  const parsed = parserIntegerBigInt(value, fieldName);
+  if (parsed < BigInt(0) || parsed > U64_MAX_BIGINT) {
+    throw new TradeError(106, `${fieldName} is outside the u64 range`);
+  }
+  return parsed;
+}
+
+function parserI128BigInt(
+  value: bigint | number | string | undefined,
+  fieldName: string
+): bigint {
+  const parsed = parserIntegerBigInt(value, fieldName);
+  if (parsed < I128_MIN_BIGINT || parsed > I128_MAX_BIGINT) {
+    throw new TradeError(106, `${fieldName} is outside the signed i128 range`);
+  }
+  return parsed;
 }
 
 export function pumpSwapParamsFromParserTrade(event: ParserPumpSwapTradeEvent): PumpSwapParams {
@@ -757,8 +795,18 @@ export function pumpSwapParamsFromParserTrade(event: ParserPumpSwapTradeEvent): 
     quoteMint: parserPublicKey(event.quote_mint),
     poolBaseTokenAccount: parserPublicKey(event.pool_base_token_account),
     poolQuoteTokenAccount: parserPublicKey(event.pool_quote_token_account),
-    poolBaseTokenReserves: parserU64(event.pool_base_token_reserves),
-    poolQuoteTokenReserves: parserU64(event.pool_quote_token_reserves),
+    poolBaseTokenReserves: parserU64BigInt(
+      event.pool_base_token_reserves,
+      'pool_base_token_reserves'
+    ),
+    poolQuoteTokenReserves: parserU64BigInt(
+      event.pool_quote_token_reserves,
+      'pool_quote_token_reserves'
+    ),
+    virtualQuoteReserves: parserI128BigInt(
+      event.virtual_quote_reserves,
+      'virtual_quote_reserves'
+    ),
     coinCreatorVaultAta: parserPublicKey(event.coin_creator_vault_ata),
     coinCreatorVaultAuthority: parserPublicKey(event.coin_creator_vault_authority),
     baseTokenProgram: parserPublicKey(event.base_token_program),
@@ -767,12 +815,24 @@ export function pumpSwapParamsFromParserTrade(event: ParserPumpSwapTradeEvent): 
     isCashbackCoin: !!event.is_cashback_coin,
     poolCreator: parserPublicKey(event.pool_creator),
     coinCreator,
-    cashbackFeeBasisPoints: parserU64BigInt(event.cashback_fee_basis_points),
+    cashbackFeeBasisPoints: parserU64BigInt(
+      event.cashback_fee_basis_points,
+      'cashback_fee_basis_points'
+    ),
     feeBasisPoints: hasFeeBasisPoints
       ? {
-          lpFeeBasisPoints: parserU64BigInt(event.lp_fee_basis_points),
-          protocolFeeBasisPoints: parserU64BigInt(event.protocol_fee_basis_points),
-          coinCreatorFeeBasisPoints: parserU64BigInt(event.coin_creator_fee_basis_points),
+          lpFeeBasisPoints: parserU64BigInt(
+            event.lp_fee_basis_points,
+            'lp_fee_basis_points'
+          ),
+          protocolFeeBasisPoints: parserU64BigInt(
+            event.protocol_fee_basis_points,
+            'protocol_fee_basis_points'
+          ),
+          coinCreatorFeeBasisPoints: parserU64BigInt(
+            event.coin_creator_fee_basis_points,
+            'coin_creator_fee_basis_points'
+          ),
         }
       : undefined,
   };
@@ -2013,8 +2073,9 @@ export class TradingClient {
           quoteMint: p.quoteMint,
           poolBaseTokenAccount: p.poolBaseTokenAccount,
           poolQuoteTokenAccount: p.poolQuoteTokenAccount,
-          poolBaseTokenReserves: BigInt(p.poolBaseTokenReserves),
-          poolQuoteTokenReserves: BigInt(p.poolQuoteTokenReserves),
+          poolBaseTokenReserves: p.poolBaseTokenReserves,
+          poolQuoteTokenReserves: p.poolQuoteTokenReserves,
+          virtualQuoteReserves: p.virtualQuoteReserves,
           coinCreatorVaultAta: p.coinCreatorVaultAta,
           coinCreatorVaultAuthority: p.coinCreatorVaultAuthority,
           baseTokenProgram: p.baseTokenProgram,
@@ -2206,8 +2267,9 @@ export class TradingClient {
           quoteMint: p.quoteMint,
           poolBaseTokenAccount: p.poolBaseTokenAccount,
           poolQuoteTokenAccount: p.poolQuoteTokenAccount,
-          poolBaseTokenReserves: BigInt(p.poolBaseTokenReserves),
-          poolQuoteTokenReserves: BigInt(p.poolQuoteTokenReserves),
+          poolBaseTokenReserves: p.poolBaseTokenReserves,
+          poolQuoteTokenReserves: p.poolQuoteTokenReserves,
+          virtualQuoteReserves: p.virtualQuoteReserves,
           coinCreatorVaultAta: p.coinCreatorVaultAta,
           coinCreatorVaultAuthority: p.coinCreatorVaultAuthority,
           baseTokenProgram: p.baseTokenProgram,

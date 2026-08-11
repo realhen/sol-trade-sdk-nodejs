@@ -440,10 +440,13 @@ export class TokenUtil {
   static async getAssociatedTokenAddress(
     mint: PublicKey,
     owner: PublicKey,
-    _allowOwnerOffCurve: boolean = false,
+    allowOwnerOffCurve: boolean = false,
     tokenProgram: PublicKey = TOKEN_PROGRAM_ID,
     associatedTokenProgram: PublicKey = ASSOCIATED_TOKEN_PROGRAM_ID
   ): Promise<PublicKey> {
+    if (!allowOwnerOffCurve && !PublicKey.isOnCurve(owner.toBytes())) {
+      throw new Error('Token owner is off curve');
+    }
     const [address] = await PublicKey.findProgramAddress(
       [owner.toBuffer(), tokenProgram.toBuffer(), mint.toBuffer()],
       associatedTokenProgram
@@ -469,7 +472,6 @@ export class TokenUtil {
       { pubkey: mint, isSigner: false, isWritable: false },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
       { pubkey: tokenProgram, isSigner: false, isWritable: false },
-      { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
     ];
 
     // Instruction data: 1 = CreateIdempotent
@@ -500,11 +502,9 @@ export class TokenUtil {
       { pubkey: mint, isSigner: false, isWritable: false },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
       { pubkey: tokenProgram, isSigner: false, isWritable: false },
-      { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
     ];
 
-    // Instruction data: 0 = Create
-    const data = Buffer.from([0]);
+    const data = Buffer.alloc(0);
 
     return new TransactionInstruction({
       keys,
@@ -555,7 +555,89 @@ export const WSOL_MINT = new PublicKey('So11111111111111111111111111111111111111
 /**
  * Native SOL mint (for Token-2022)
  */
-export const NATIVE_MINT = new PublicKey('So11111111111111111111111111111111111111111');
+export const NATIVE_MINT = WSOL_MINT;
+
+/** Synchronous ATA derivation compatible with @solana/spl-token. */
+export function getAssociatedTokenAddressSync(
+  mint: PublicKey,
+  owner: PublicKey,
+  allowOwnerOffCurve = false,
+  tokenProgram: PublicKey = TOKEN_PROGRAM_ID,
+  associatedTokenProgram: PublicKey = ASSOCIATED_TOKEN_PROGRAM_ID
+): PublicKey {
+  if (!allowOwnerOffCurve && !PublicKey.isOnCurve(owner.toBytes())) {
+    throw new Error('Token owner is off curve');
+  }
+  return PublicKey.findProgramAddressSync(
+    [owner.toBuffer(), tokenProgram.toBuffer(), mint.toBuffer()],
+    associatedTokenProgram
+  )[0];
+}
+
+/** Build a standard ATA creation instruction. */
+export function createAssociatedTokenAccountInstruction(
+  payer: PublicKey,
+  associatedToken: PublicKey,
+  owner: PublicKey,
+  mint: PublicKey,
+  tokenProgram: PublicKey = TOKEN_PROGRAM_ID,
+  associatedTokenProgram: PublicKey = ASSOCIATED_TOKEN_PROGRAM_ID
+): TransactionInstruction {
+  return TokenUtil.createAssociatedTokenAccountInstruction(
+    payer,
+    associatedToken,
+    owner,
+    mint,
+    tokenProgram,
+    associatedTokenProgram
+  );
+}
+
+/** Build an idempotent ATA creation instruction. */
+export function createAssociatedTokenAccountIdempotentInstruction(
+  payer: PublicKey,
+  associatedToken: PublicKey,
+  owner: PublicKey,
+  mint: PublicKey,
+  tokenProgram: PublicKey = TOKEN_PROGRAM_ID,
+  associatedTokenProgram: PublicKey = ASSOCIATED_TOKEN_PROGRAM_ID
+): TransactionInstruction {
+  return TokenUtil.createAssociatedTokenAccountIdempotentInstruction(
+    payer,
+    associatedToken,
+    owner,
+    mint,
+    tokenProgram,
+    associatedTokenProgram
+  );
+}
+
+type TokenMultisigner = PublicKey | { publicKey: PublicKey };
+
+/** Build a token-account close instruction. */
+export function createCloseAccountInstruction(
+  account: PublicKey,
+  destination: PublicKey,
+  authority: PublicKey,
+  multiSigners: TokenMultisigner[] = [],
+  tokenProgram: PublicKey = TOKEN_PROGRAM_ID
+): TransactionInstruction {
+  return TokenInstructionBuilder.closeAccount(
+    account,
+    destination,
+    authority,
+    multiSigners.map((signer) => signer instanceof PublicKey ? signer : signer.publicKey),
+    tokenProgram
+  );
+}
+
+/** Build a SyncNative instruction for a wrapped SOL account. */
+export function createSyncNativeInstruction(
+  account: PublicKey,
+  tokenProgram: PublicKey = TOKEN_PROGRAM_ID
+): TransactionInstruction {
+  return TokenInstructionBuilder.syncNative(account, tokenProgram);
+}
 
 /**
  * USDC mint

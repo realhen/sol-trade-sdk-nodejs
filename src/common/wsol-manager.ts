@@ -12,12 +12,12 @@ import {
   TransactionInstruction,
   SystemProgram,
 } from '@solana/web3.js';
-import {
-  createSyncNativeInstruction,
-  NATIVE_MINT,
-} from '@solana/spl-token';
 import { TOKEN_PROGRAM, WSOL_TOKEN_ACCOUNT, ASSOCIATED_TOKEN_PROGRAM } from '../constants';
-import { TokenInstructionBuilder, TokenUtil } from './spl-token';
+import {
+  TokenInstructionBuilder,
+  TokenUtil,
+  createSyncNativeInstruction,
+} from './spl-token';
 
 // ===== PDA Cache for ATA addresses =====
 

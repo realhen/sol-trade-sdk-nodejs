@@ -20,6 +20,7 @@ import {
   calculateWithSlippageSell,
   buyQuoteInputInternalWithFees,
   sellBaseInputInternalWithFees,
+  effectiveQuoteReserves,
   legacyPumpSwapFeeBasisPoints,
   pumpSwapFeeBasisPoints,
   type PumpSwapFeeBasisPoints,
@@ -68,6 +69,7 @@ export const PUMPSWAP_BUY_DISCRIMINATOR = Buffer.from([102, 6, 61, 18, 1, 218, 2
 export const PUMPSWAP_BUY_EXACT_QUOTE_IN_DISCRIMINATOR = Buffer.from([198, 46, 21, 82, 180, 217, 232, 112]);
 export const PUMPSWAP_SELL_DISCRIMINATOR = Buffer.from([51, 230, 133, 164, 1, 127, 131, 173]);
 export const PUMPSWAP_CLAIM_CASHBACK_DISCRIMINATOR = Buffer.from([37, 58, 35, 126, 190, 53, 228, 197]);
+export const PUMPSWAP_POOL_DISCRIMINATOR = Buffer.from([241, 154, 109, 4, 17, 177, 109, 188]);
 
 // Seeds
 const POOL_V2_SEED = Buffer.from('pool-v2');
@@ -151,16 +153,24 @@ export function getCoinCreatorVaultAuthority(coinCreator: PublicKey): PublicKey 
 /**
  * Coin creator vault ATA
  */
-export function getCoinCreatorVaultAta(coinCreator: PublicKey, quoteMint: PublicKey): PublicKey {
+export function getCoinCreatorVaultAta(
+  coinCreator: PublicKey,
+  quoteMint: PublicKey,
+  quoteTokenProgram: PublicKey = TOKEN_PROGRAM
+): PublicKey {
   const authority = getCoinCreatorVaultAuthority(coinCreator);
-  return getAssociatedTokenAddress(authority, quoteMint, TOKEN_PROGRAM);
+  return getAssociatedTokenAddress(authority, quoteMint, quoteTokenProgram);
 }
 
 /**
  * Fee recipient ATA
  */
-export function getFeeRecipientAta(feeRecipient: PublicKey, quoteMint: PublicKey): PublicKey {
-  return getAssociatedTokenAddress(feeRecipient, quoteMint, TOKEN_PROGRAM);
+export function getFeeRecipientAta(
+  feeRecipient: PublicKey,
+  quoteMint: PublicKey,
+  quoteTokenProgram: PublicKey = TOKEN_PROGRAM
+): PublicKey {
+  return getAssociatedTokenAddress(feeRecipient, quoteMint, quoteTokenProgram);
 }
 
 /**
@@ -342,6 +352,8 @@ export interface PumpSwapParams {
   poolQuoteTokenAccount: PublicKey;
   poolBaseTokenReserves: bigint;
   poolQuoteTokenReserves: bigint;
+  /** Signed i128 from the Pool account or appended BuyEvent/SellEvent field. */
+  virtualQuoteReserves: bigint;
   coinCreatorVaultAta: PublicKey;
   coinCreatorVaultAuthority: PublicKey;
   baseTokenProgram: PublicKey;
@@ -430,6 +442,7 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
     poolQuoteTokenAccount,
     poolBaseTokenReserves,
     poolQuoteTokenReserves,
+    virtualQuoteReserves,
     coinCreatorVaultAta,
     coinCreatorVaultAuthority,
     baseTokenProgram,
@@ -437,6 +450,7 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
     isMayhemMode,
     isCashbackCoin,
   } = protocolParams;
+  effectiveQuoteReserves(poolQuoteTokenReserves, virtualQuoteReserves);
 
   // Check if pool contains WSOL or USDC
   const isWsol = quoteMint.equals(WSOL_TOKEN_ACCOUNT) || baseMint.equals(WSOL_TOKEN_ACCOUNT);
@@ -465,6 +479,7 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
       slippageBasisPoints,
       poolBaseTokenReserves,
       poolQuoteTokenReserves,
+      virtualQuoteReserves,
       feeBasisPoints
     );
     tokenAmount = result.base;
@@ -475,6 +490,7 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
       slippageBasisPoints,
       poolBaseTokenReserves,
       poolQuoteTokenReserves,
+      virtualQuoteReserves,
       feeBasisPoints
     );
     tokenAmount = result.minQuote;
@@ -492,7 +508,7 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
 
   // Determine fee recipient
   const feeRecipient = isMayhemMode ? getMayhemFeeRecipientRandom() : getPumpSwapProtocolFeeRecipientRandom();
-  const feeRecipientAta = getFeeRecipientAta(feeRecipient, quoteMint);
+  const feeRecipientAta = getFeeRecipientAta(feeRecipient, quoteMint, quoteTokenProgram);
 
   // Build instructions
   const instructions: TransactionInstruction[] = [];
@@ -564,7 +580,7 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
   const protocolExtraFee = getPumpSwapProtocolExtraFeeRecipientRandom();
   accounts.push({ pubkey: protocolExtraFee, isSigner: false, isWritable: false });
   accounts.push({
-    pubkey: getAssociatedTokenAddress(protocolExtraFee, quoteMint, TOKEN_PROGRAM),
+    pubkey: getFeeRecipientAta(protocolExtraFee, quoteMint, quoteTokenProgram),
     isSigner: false,
     isWritable: true,
   });
@@ -645,6 +661,7 @@ export function buildSellInstructions(params: BuildSellParams): TransactionInstr
     poolQuoteTokenAccount,
     poolBaseTokenReserves,
     poolQuoteTokenReserves,
+    virtualQuoteReserves,
     coinCreatorVaultAta,
     coinCreatorVaultAuthority,
     baseTokenProgram,
@@ -652,6 +669,7 @@ export function buildSellInstructions(params: BuildSellParams): TransactionInstr
     isMayhemMode,
     isCashbackCoin,
   } = protocolParams;
+  effectiveQuoteReserves(poolQuoteTokenReserves, virtualQuoteReserves);
 
   // Check if pool contains WSOL or USDC
   const isWsol = quoteMint.equals(WSOL_TOKEN_ACCOUNT) || baseMint.equals(WSOL_TOKEN_ACCOUNT);
@@ -679,6 +697,7 @@ export function buildSellInstructions(params: BuildSellParams): TransactionInstr
       slippageBasisPoints,
       poolBaseTokenReserves,
       poolQuoteTokenReserves,
+      virtualQuoteReserves,
       feeBasisPoints
     );
     solAmount = result.minQuote;
@@ -688,6 +707,7 @@ export function buildSellInstructions(params: BuildSellParams): TransactionInstr
       slippageBasisPoints,
       poolBaseTokenReserves,
       poolQuoteTokenReserves,
+      virtualQuoteReserves,
       feeBasisPoints
     );
     tokenAmount = result.maxQuote;
@@ -705,7 +725,7 @@ export function buildSellInstructions(params: BuildSellParams): TransactionInstr
 
   // Determine fee recipient
   const feeRecipient = isMayhemMode ? getMayhemFeeRecipientRandom() : getPumpSwapProtocolFeeRecipientRandom();
-  const feeRecipientAta = getFeeRecipientAta(feeRecipient, quoteMint);
+  const feeRecipientAta = getFeeRecipientAta(feeRecipient, quoteMint, quoteTokenProgram);
 
   // Build instructions
   const instructions: TransactionInstruction[] = [];
@@ -772,7 +792,7 @@ export function buildSellInstructions(params: BuildSellParams): TransactionInstr
   const protocolExtraFee = getPumpSwapProtocolExtraFeeRecipientRandom();
   accounts.push({ pubkey: protocolExtraFee, isSigner: false, isWritable: false });
   accounts.push({
-    pubkey: getAssociatedTokenAddress(protocolExtraFee, quoteMint, TOKEN_PROGRAM),
+    pubkey: getFeeRecipientAta(protocolExtraFee, quoteMint, quoteTokenProgram),
     isSigner: false,
     isWritable: true,
   });
@@ -857,9 +877,10 @@ export function buildClaimCashbackInstruction(
 // ===== Pool Types and Decoding - from Rust: src/instruction/utils/pumpswap_types.rs =====
 
 /**
- * Pool size in bytes (244 bytes as per pump-public-docs)
+ * Current Pool payload size, excluding the 8-byte Anchor discriminator.
  */
-export const POOL_SIZE = 244;
+export const POOL_SIZE = 253;
+export const LEGACY_POOL_SIZE = 244;
 
 /**
  * PumpSwap Pool structure
@@ -878,6 +899,7 @@ export interface PumpSwapPool {
   coinCreator: PublicKey;
   isMayhemMode: boolean;
   isCashbackCoin: boolean;
+  virtualQuoteReserves: bigint;
 }
 
 export interface PumpSwapFeeTier {
@@ -896,10 +918,14 @@ export interface PumpSwapFeeConfig {
  * Uses Borsh deserialization
  */
 export function decodePool(data: Buffer): PumpSwapPool | null {
-  if (data.length === POOL_SIZE + 8 || data.length === 643) {
+  const isFullAccount = [LEGACY_POOL_SIZE + 8, POOL_SIZE + 8, 300, 643].includes(data.length);
+  if (isFullAccount) {
+    if (!data.subarray(0, 8).equals(PUMPSWAP_POOL_DISCRIMINATOR)) {
+      return null;
+    }
     data = data.subarray(8);
   }
-  if (data.length < POOL_SIZE) {
+  if (data.length < POOL_SIZE && data.length !== LEGACY_POOL_SIZE) {
     return null;
   }
 
@@ -954,6 +980,10 @@ export function decodePool(data: Buffer): PumpSwapPool | null {
     const isCashbackCoin = data.readUInt8(offset) === 1;
     offset += 1;
 
+    const virtualQuoteReserves = data.length >= POOL_SIZE
+      ? readI128LE(data, offset)
+      : BigInt(0);
+
     return {
       poolBump,
       index,
@@ -967,6 +997,7 @@ export function decodePool(data: Buffer): PumpSwapPool | null {
       coinCreator,
       isMayhemMode,
       isCashbackCoin,
+      virtualQuoteReserves,
     };
   } catch {
     return null;
@@ -1025,6 +1056,12 @@ function readU128LE(data: Buffer, offset: number): bigint {
   const lo = data.readBigUInt64LE(offset);
   const hi = data.readBigUInt64LE(offset + 8);
   return lo + (hi << BigInt(64));
+}
+
+function readI128LE(data: Buffer, offset: number): bigint {
+  const unsigned = readU128LE(data, offset);
+  const signBit = BigInt(1) << BigInt(127);
+  return unsigned >= signBit ? unsigned - (BigInt(1) << BigInt(128)) : unsigned;
 }
 
 function decodeFees(data: Buffer, offset: number): PumpSwapFeeBasisPoints {
@@ -1213,13 +1250,6 @@ export async function findByMint(
 
   return null;
 }
-
-// ===== Pool Size Constants - from Rust: src/instruction/utils/pumpswap.rs =====
-
-/** Pool data size for SPL Token (8 discriminator + 244 data) */
-const POOL_DATA_LEN_SPL = 8 + 244;
-/** Pool data size for Token2022 */
-const POOL_DATA_LEN_T22 = 643;
 
 /**
  * Find a PumpSwap pool by base mint using getProgramAccounts.

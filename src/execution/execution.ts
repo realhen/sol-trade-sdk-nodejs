@@ -476,6 +476,7 @@ export interface PumpSwapParams extends DexParam {
   poolQuoteTokenAccount: Uint8Array;
   poolBaseTokenReserves?: bigint;
   poolQuoteTokenReserves?: bigint;
+  virtualQuoteReserves?: bigint;
   coinCreatorVaultAta?: Uint8Array;
   coinCreatorVaultAuthority?: Uint8Array;
   baseTokenProgram?: Uint8Array;

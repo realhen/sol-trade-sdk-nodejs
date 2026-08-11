@@ -16,7 +16,6 @@ import {
   LAMPORTS_PER_SOL,
   type Commitment,
 } from '@solana/web3.js';
-import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { TOKEN_PROGRAM, WSOL_TOKEN_ACCOUNT } from '../constants';
 import { TokenInstructionBuilder, TokenUtil } from './spl-token';
 import { getAssociatedTokenAddressFast } from './wsol-manager';
