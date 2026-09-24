@@ -38,15 +38,19 @@ export function getBuyTokenAmountFromSolAmount(
   }
 
   // Calculate total fee
-  const hasCreator = creator.some(b => b !== 0);
+  const hasCreator = creator.some((b) => b !== 0);
   const totalFeeBasisPoints = FEE_BASIS_POINTS + (hasCreator ? CREATOR_FEE : 0);
 
   // Calculate input amount after fees
-  const inputAmount = Math.floor((amount * 10_000) / (totalFeeBasisPoints + 10_000));
+  const inputAmount = Math.floor(
+    (amount * 10_000) / (totalFeeBasisPoints + 10_000),
+  );
 
   const denominator = virtualSolReserves + inputAmount;
 
-  let tokensReceived = Math.floor((inputAmount * virtualTokenReserves) / denominator);
+  let tokensReceived = Math.floor(
+    (inputAmount * virtualTokenReserves) / denominator,
+  );
 
   // Cap at real reserves
   tokensReceived = Math.min(tokensReceived, realTokenReserves);
@@ -87,7 +91,7 @@ export function getSellSolAmountFromTokenAmount(
   const solCost = Math.floor(numerator / denominator);
 
   // Calculate fee
-  const hasCreator = creator.some(b => b !== 0);
+  const hasCreator = creator.some((b) => b !== 0);
   const totalFeeBasisPoints = FEE_BASIS_POINTS + (hasCreator ? CREATOR_FEE : 0);
 
   const fee = computeFee(solCost, totalFeeBasisPoints);
@@ -98,14 +102,20 @@ export function getSellSolAmountFromTokenAmount(
 /**
  * Calculate max SOL cost with slippage for buy
  */
-export function calculateWithSlippageBuy(amount: number, slippageBasisPoints: number): number {
+export function calculateWithSlippageBuy(
+  amount: number,
+  slippageBasisPoints: number,
+): number {
   return amount + Math.floor((amount * slippageBasisPoints) / 10_000);
 }
 
 /**
  * Calculate min tokens out with slippage for sell
  */
-export function calculateWithSlippageSell(amount: number, slippageBasisPoints: number): number {
+export function calculateWithSlippageSell(
+  amount: number,
+  slippageBasisPoints: number,
+): number {
   return amount - Math.floor((amount * slippageBasisPoints) / 10_000);
 }
 

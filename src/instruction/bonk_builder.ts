@@ -1,3 +1,4 @@
+import { Buffer } from "buffer";
 /**
  * Bonk Protocol Instruction Builder
  *
@@ -28,42 +29,42 @@ import {
 
 /** Bonk program ID */
 export const BONK_PROGRAM_ID = new PublicKey(
-  "LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj"
+  "LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj",
 );
 
 /** Bonk Authority */
 export const BONK_AUTHORITY = new PublicKey(
-  "WLhv2UAZm6z4KyaaELi5pjdbJh6RESMva1Rnn8pJVVh"
+  "WLhv2UAZm6z4KyaaELi5pjdbJh6RESMva1Rnn8pJVVh",
 );
 
 /** Bonk Global Config */
 export const BONK_GLOBAL_CONFIG = new PublicKey(
-  "6s1xP3hpbAfFoNtUNF8mfHsjr2Bd97JxFJRWLbL6aHuX"
+  "6s1xP3hpbAfFoNtUNF8mfHsjr2Bd97JxFJRWLbL6aHuX",
 );
 
 /** Bonk USD1 Global Config */
 export const BONK_USD1_GLOBAL_CONFIG = new PublicKey(
-  "EPiZbnrThjyLnoQ6QQzkxeFqyL5uyg9RzNHHAudUPxBz"
+  "EPiZbnrThjyLnoQ6QQzkxeFqyL5uyg9RzNHHAudUPxBz",
 );
 
 /** Bonk Event Authority */
 export const BONK_EVENT_AUTHORITY = new PublicKey(
-  "2DPAtwB8L12vrMRExbLuyGnC7n2J5LNoZQSejeQGpwkr"
+  "2DPAtwB8L12vrMRExbLuyGnC7n2J5LNoZQSejeQGpwkr",
 );
 
 /** WSOL Token Account (mint) */
 export const WSOL_MINT = new PublicKey(
-  "So11111111111111111111111111111111111111112"
+  "So11111111111111111111111111111111111111112",
 );
 
 /** USD1 Token Account (mint) */
 export const USD1_MINT = new PublicKey(
-  "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB"
+  "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB",
 );
 
 /** USDC Token Account (mint) */
 export const USDC_MINT = new PublicKey(
-  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
 );
 
 /** Fee rates - from Rust */
@@ -99,10 +100,13 @@ export const BONK_POOL_VAULT_SEED = Buffer.from("pool_vault");
 /**
  * Derive the pool PDA for given base and quote mints
  */
-export function getBonkPoolPda(baseMint: PublicKey, quoteMint: PublicKey): PublicKey {
+export function getBonkPoolPda(
+  baseMint: PublicKey,
+  quoteMint: PublicKey,
+): PublicKey {
   const [pda] = PublicKey.findProgramAddressSync(
     [BONK_POOL_SEED, baseMint.toBuffer(), quoteMint.toBuffer()],
-    BONK_PROGRAM_ID
+    BONK_PROGRAM_ID,
   );
   return pda;
 }
@@ -110,10 +114,13 @@ export function getBonkPoolPda(baseMint: PublicKey, quoteMint: PublicKey): Publi
 /**
  * Derive the vault PDA for given pool and mint
  */
-export function getBonkVaultPda(poolState: PublicKey, mint: PublicKey): PublicKey {
+export function getBonkVaultPda(
+  poolState: PublicKey,
+  mint: PublicKey,
+): PublicKey {
   const [pda] = PublicKey.findProgramAddressSync(
     [BONK_POOL_VAULT_SEED, poolState.toBuffer(), mint.toBuffer()],
-    BONK_PROGRAM_ID
+    BONK_PROGRAM_ID,
   );
   return pda;
 }
@@ -121,10 +128,12 @@ export function getBonkVaultPda(poolState: PublicKey, mint: PublicKey): PublicKe
 /**
  * Get platform associated account PDA
  */
-export function getBonkPlatformAssociatedAccount(platformConfig: PublicKey): PublicKey {
+export function getBonkPlatformAssociatedAccount(
+  platformConfig: PublicKey,
+): PublicKey {
   const [pda] = PublicKey.findProgramAddressSync(
     [platformConfig.toBuffer(), WSOL_MINT.toBuffer()],
-    BONK_PROGRAM_ID
+    BONK_PROGRAM_ID,
   );
   return pda;
 }
@@ -135,7 +144,7 @@ export function getBonkPlatformAssociatedAccount(platformConfig: PublicKey): Pub
 export function getBonkCreatorAssociatedAccount(creator: PublicKey): PublicKey {
   const [pda] = PublicKey.findProgramAddressSync(
     [creator.toBuffer(), WSOL_MINT.toBuffer()],
-    BONK_PROGRAM_ID
+    BONK_PROGRAM_ID,
   );
   return pda;
 }
@@ -202,13 +211,13 @@ function getAmountOut(
   const platformFee = (amountIn * platformFeeRate) / BigInt(10000);
   const shareFee = (amountIn * shareFeeRate) / BigInt(10000);
   const amountInNet = amountIn - protocolFee - platformFee - shareFee;
-  
+
   const inputReserve = virtualQuote + realQuote;
   const outputReserve = virtualBase - realBase;
   const numerator = amountInNet * outputReserve;
   const denominator = inputReserve + amountInNet;
   let amountOut = numerator / denominator;
-  
+
   amountOut = amountOut - (amountOut * slippageBps) / BigInt(10000);
   return amountOut;
 }
@@ -222,7 +231,7 @@ function getAmountOut(
  * 100% port from Rust: src/instruction/bonk.rs build_buy_instructions
  */
 export function buildBonkBuyInstructions(
-  params: BonkBuildBuyParams
+  params: BonkBuildBuyParams,
 ): TransactionInstruction[] {
   const {
     payer,
@@ -243,7 +252,8 @@ export function buildBonkBuyInstructions(
   const payerPubkey = payer instanceof Keypair ? payer.publicKey : payer;
   const instructions: TransactionInstruction[] = [];
 
-  const isUsd1Pool = protocolParams.globalConfig?.equals(BONK_USD1_GLOBAL_CONFIG) ?? false;
+  const isUsd1Pool =
+    protocolParams.globalConfig?.equals(BONK_USD1_GLOBAL_CONFIG) ?? false;
   const quoteMint = isUsd1Pool ? USD1_MINT : WSOL_MINT;
 
   // Get pool state
@@ -251,20 +261,24 @@ export function buildBonkBuyInstructions(
     ? getBonkPoolPda(outputMint, quoteMint)
     : protocolParams.poolState;
 
-  const globalConfig = isUsd1Pool ? BONK_USD1_GLOBAL_CONFIG : BONK_GLOBAL_CONFIG;
+  const globalConfig = isUsd1Pool
+    ? BONK_USD1_GLOBAL_CONFIG
+    : BONK_GLOBAL_CONFIG;
 
   // Calculate minimum output
-  const minimumAmountOut = fixedOutputAmount ?? getAmountOut(
-    inputAmount,
-    BONK_PROTOCOL_FEE_RATE,
-    BONK_PLATFORM_FEE_RATE,
-    BONK_SHARE_FEE_RATE,
-    protocolParams.virtualBase,
-    protocolParams.virtualQuote,
-    protocolParams.realBase,
-    protocolParams.realQuote,
-    slippageBasisPoints,
-  );
+  const minimumAmountOut =
+    fixedOutputAmount ??
+    getAmountOut(
+      inputAmount,
+      BONK_PROTOCOL_FEE_RATE,
+      BONK_PLATFORM_FEE_RATE,
+      BONK_SHARE_FEE_RATE,
+      protocolParams.virtualBase,
+      protocolParams.virtualQuote,
+      protocolParams.realBase,
+      protocolParams.realQuote,
+      slippageBasisPoints,
+    );
 
   // Derive token accounts
   const userBaseTokenAccount = getAssociatedTokenAddressSync(
@@ -290,9 +304,19 @@ export function buildBonkBuyInstructions(
 
   // Handle WSOL wrapping
   if (createInputMintAta && !isUsd1Pool) {
-    const wsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, payerPubkey, true, TOKEN_PROGRAM_ID);
+    const wsolAta = getAssociatedTokenAddressSync(
+      NATIVE_MINT,
+      payerPubkey,
+      true,
+      TOKEN_PROGRAM_ID,
+    );
     instructions.push(
-      createAssociatedTokenAccountInstruction(payerPubkey, wsolAta, payerPubkey, NATIVE_MINT)
+      createAssociatedTokenAccountInstruction(
+        payerPubkey,
+        wsolAta,
+        payerPubkey,
+        NATIVE_MINT,
+      ),
     );
     // Transfer SOL
     const transferIx = SystemProgram.transfer({
@@ -314,7 +338,7 @@ export function buildBonkBuyInstructions(
         payerPubkey,
         outputMint,
         protocolParams.mintTokenProgram,
-      )
+      ),
     );
   }
 
@@ -331,7 +355,11 @@ export function buildBonkBuyInstructions(
     { pubkey: payerPubkey, isSigner: true, isWritable: true },
     { pubkey: BONK_AUTHORITY, isSigner: false, isWritable: false },
     { pubkey: globalConfig, isSigner: false, isWritable: false },
-    { pubkey: protocolParams.platformConfig, isSigner: false, isWritable: false },
+    {
+      pubkey: protocolParams.platformConfig,
+      isSigner: false,
+      isWritable: false,
+    },
     { pubkey: poolState, isSigner: false, isWritable: true },
     { pubkey: userBaseTokenAccount, isSigner: false, isWritable: true },
     { pubkey: userQuoteTokenAccount, isSigner: false, isWritable: true },
@@ -339,13 +367,25 @@ export function buildBonkBuyInstructions(
     { pubkey: quoteVault, isSigner: false, isWritable: true },
     { pubkey: outputMint, isSigner: false, isWritable: false },
     { pubkey: quoteMint, isSigner: false, isWritable: false },
-    { pubkey: protocolParams.mintTokenProgram, isSigner: false, isWritable: false },
+    {
+      pubkey: protocolParams.mintTokenProgram,
+      isSigner: false,
+      isWritable: false,
+    },
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: BONK_EVENT_AUTHORITY, isSigner: false, isWritable: false },
     { pubkey: BONK_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-    { pubkey: protocolParams.platformAssociatedAccount, isSigner: false, isWritable: true },
-    { pubkey: protocolParams.creatorAssociatedAccount, isSigner: false, isWritable: true },
+    {
+      pubkey: protocolParams.platformAssociatedAccount,
+      isSigner: false,
+      isWritable: true,
+    },
+    {
+      pubkey: protocolParams.creatorAssociatedAccount,
+      isSigner: false,
+      isWritable: true,
+    },
   ];
 
   instructions.push(
@@ -353,14 +393,19 @@ export function buildBonkBuyInstructions(
       keys,
       programId: BONK_PROGRAM_ID,
       data,
-    })
+    }),
   );
 
   // Close WSOL ATA
   if (closeInputMintAta && !isUsd1Pool) {
-    const wsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, payerPubkey, true, TOKEN_PROGRAM_ID);
+    const wsolAta = getAssociatedTokenAddressSync(
+      NATIVE_MINT,
+      payerPubkey,
+      true,
+      TOKEN_PROGRAM_ID,
+    );
     instructions.push(
-      createCloseAccountInstruction(wsolAta, payerPubkey, payerPubkey)
+      createCloseAccountInstruction(wsolAta, payerPubkey, payerPubkey),
     );
   }
 
@@ -372,7 +417,7 @@ export function buildBonkBuyInstructions(
  * 100% port from Rust: src/instruction/bonk.rs build_sell_instructions
  */
 export function buildBonkSellInstructions(
-  params: BonkBuildSellParams
+  params: BonkBuildSellParams,
 ): TransactionInstruction[] {
   const {
     payer,
@@ -393,7 +438,8 @@ export function buildBonkSellInstructions(
   const payerPubkey = payer instanceof Keypair ? payer.publicKey : payer;
   const instructions: TransactionInstruction[] = [];
 
-  const isUsd1Pool = protocolParams.globalConfig?.equals(BONK_USD1_GLOBAL_CONFIG) ?? false;
+  const isUsd1Pool =
+    protocolParams.globalConfig?.equals(BONK_USD1_GLOBAL_CONFIG) ?? false;
   const quoteMint = isUsd1Pool ? USD1_MINT : WSOL_MINT;
 
   // Get pool state
@@ -401,20 +447,24 @@ export function buildBonkSellInstructions(
     ? getBonkPoolPda(inputMint, quoteMint)
     : protocolParams.poolState;
 
-  const globalConfig = isUsd1Pool ? BONK_USD1_GLOBAL_CONFIG : BONK_GLOBAL_CONFIG;
+  const globalConfig = isUsd1Pool
+    ? BONK_USD1_GLOBAL_CONFIG
+    : BONK_GLOBAL_CONFIG;
 
   // Calculate minimum output
-  const minimumAmountOut = fixedOutputAmount ?? getAmountOut(
-    inputAmount,
-    BONK_PROTOCOL_FEE_RATE,
-    BONK_PLATFORM_FEE_RATE,
-    BONK_SHARE_FEE_RATE,
-    protocolParams.virtualBase,
-    protocolParams.virtualQuote,
-    protocolParams.realBase,
-    protocolParams.realQuote,
-    slippageBasisPoints,
-  );
+  const minimumAmountOut =
+    fixedOutputAmount ??
+    getAmountOut(
+      inputAmount,
+      BONK_PROTOCOL_FEE_RATE,
+      BONK_PLATFORM_FEE_RATE,
+      BONK_SHARE_FEE_RATE,
+      protocolParams.virtualBase,
+      protocolParams.virtualQuote,
+      protocolParams.realBase,
+      protocolParams.realQuote,
+      slippageBasisPoints,
+    );
 
   // Derive token accounts
   const userBaseTokenAccount = getAssociatedTokenAddressSync(
@@ -440,9 +490,19 @@ export function buildBonkSellInstructions(
 
   // Create output ATA for WSOL
   if (createOutputMintAta && !isUsd1Pool) {
-    const wsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, payerPubkey, true, TOKEN_PROGRAM_ID);
+    const wsolAta = getAssociatedTokenAddressSync(
+      NATIVE_MINT,
+      payerPubkey,
+      true,
+      TOKEN_PROGRAM_ID,
+    );
     instructions.push(
-      createAssociatedTokenAccountInstruction(payerPubkey, wsolAta, payerPubkey, NATIVE_MINT)
+      createAssociatedTokenAccountInstruction(
+        payerPubkey,
+        wsolAta,
+        payerPubkey,
+        NATIVE_MINT,
+      ),
     );
   }
 
@@ -459,7 +519,11 @@ export function buildBonkSellInstructions(
     { pubkey: payerPubkey, isSigner: true, isWritable: true },
     { pubkey: BONK_AUTHORITY, isSigner: false, isWritable: false },
     { pubkey: globalConfig, isSigner: false, isWritable: false },
-    { pubkey: protocolParams.platformConfig, isSigner: false, isWritable: false },
+    {
+      pubkey: protocolParams.platformConfig,
+      isSigner: false,
+      isWritable: false,
+    },
     { pubkey: poolState, isSigner: false, isWritable: true },
     { pubkey: userBaseTokenAccount, isSigner: false, isWritable: true },
     { pubkey: userQuoteTokenAccount, isSigner: false, isWritable: true },
@@ -467,13 +531,25 @@ export function buildBonkSellInstructions(
     { pubkey: quoteVault, isSigner: false, isWritable: true },
     { pubkey: inputMint, isSigner: false, isWritable: false },
     { pubkey: quoteMint, isSigner: false, isWritable: false },
-    { pubkey: protocolParams.mintTokenProgram, isSigner: false, isWritable: false },
+    {
+      pubkey: protocolParams.mintTokenProgram,
+      isSigner: false,
+      isWritable: false,
+    },
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: BONK_EVENT_AUTHORITY, isSigner: false, isWritable: false },
     { pubkey: BONK_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-    { pubkey: protocolParams.platformAssociatedAccount, isSigner: false, isWritable: true },
-    { pubkey: protocolParams.creatorAssociatedAccount, isSigner: false, isWritable: true },
+    {
+      pubkey: protocolParams.platformAssociatedAccount,
+      isSigner: false,
+      isWritable: true,
+    },
+    {
+      pubkey: protocolParams.creatorAssociatedAccount,
+      isSigner: false,
+      isWritable: true,
+    },
   ];
 
   instructions.push(
@@ -481,21 +557,32 @@ export function buildBonkSellInstructions(
       keys,
       programId: BONK_PROGRAM_ID,
       data,
-    })
+    }),
   );
 
   // Close WSOL ATA
   if (closeOutputMintAta && !isUsd1Pool) {
-    const wsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, payerPubkey, true, TOKEN_PROGRAM_ID);
+    const wsolAta = getAssociatedTokenAddressSync(
+      NATIVE_MINT,
+      payerPubkey,
+      true,
+      TOKEN_PROGRAM_ID,
+    );
     instructions.push(
-      createCloseAccountInstruction(wsolAta, payerPubkey, payerPubkey)
+      createCloseAccountInstruction(wsolAta, payerPubkey, payerPubkey),
     );
   }
 
   // Close input token account
   if (closeInputMintAta) {
     instructions.push(
-      createCloseAccountInstruction(userBaseTokenAccount, payerPubkey, payerPubkey, [], protocolParams.mintTokenProgram)
+      createCloseAccountInstruction(
+        userBaseTokenAccount,
+        payerPubkey,
+        payerPubkey,
+        [],
+        protocolParams.mintTokenProgram,
+      ),
     );
   }
 
@@ -693,8 +780,12 @@ export function decodeBonkPoolState(data: Buffer): BonkPoolState | null {
  * 100% from Rust: src/instruction/utils/bonk.rs fetch_pool_state
  */
 export async function fetchBonkPoolState(
-  connection: { getAccountInfo: (pubkey: PublicKey) => Promise<{ value?: { data: Buffer } }> },
-  poolAddress: PublicKey
+  connection: {
+    getAccountInfo: (
+      pubkey: PublicKey,
+    ) => Promise<{ value?: { data: Buffer } }>;
+  },
+  poolAddress: PublicKey,
 ): Promise<BonkPoolState | null> {
   const account = await connection.getAccountInfo(poolAddress);
   if (!account?.value?.data) {
@@ -707,11 +798,14 @@ export async function fetchBonkPoolState(
  * Get pool PDA for Bonk.
  * Seeds: ["pool", base_mint, quote_mint]
  */
-export function getBonkPoolPDA(baseMint: PublicKey, quoteMint: PublicKey): PublicKey {
-  const POOL_SEED = Buffer.from('pool');
+export function getBonkPoolPDA(
+  baseMint: PublicKey,
+  quoteMint: PublicKey,
+): PublicKey {
+  const POOL_SEED = Buffer.from("pool");
   const [pda] = PublicKey.findProgramAddressSync(
     [POOL_SEED, baseMint.toBuffer(), quoteMint.toBuffer()],
-    BONK_PROGRAM_ID
+    BONK_PROGRAM_ID,
   );
   return pda;
 }
@@ -720,11 +814,14 @@ export function getBonkPoolPDA(baseMint: PublicKey, quoteMint: PublicKey): Publi
  * Get vault PDA for Bonk.
  * Seeds: ["pool_vault", pool_state, mint]
  */
-export function getBonkVaultPDA(poolState: PublicKey, mint: PublicKey): PublicKey {
-  const POOL_VAULT_SEED = Buffer.from('pool_vault');
+export function getBonkVaultPDA(
+  poolState: PublicKey,
+  mint: PublicKey,
+): PublicKey {
+  const POOL_VAULT_SEED = Buffer.from("pool_vault");
   const [pda] = PublicKey.findProgramAddressSync(
     [POOL_VAULT_SEED, poolState.toBuffer(), mint.toBuffer()],
-    BONK_PROGRAM_ID
+    BONK_PROGRAM_ID,
   );
   return pda;
 }

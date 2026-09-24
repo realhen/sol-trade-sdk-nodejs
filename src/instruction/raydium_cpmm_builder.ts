@@ -1,3 +1,4 @@
+import { Buffer } from "buffer";
 /**
  * Raydium CPMM (Concentrated Pool Market Maker) Protocol Instruction Builder
  *
@@ -25,12 +26,12 @@ import {
 
 /** Raydium CPMM program ID */
 export const RAYDIUM_CPMM_PROGRAM_ID = new PublicKey(
-  "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C"
+  "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C",
 );
 
 /** Authority */
 export const RAYDIUM_CPMM_AUTHORITY = new PublicKey(
-  "GpMZbSM2GgvTKHJirzeGfMFoaZ8UR2X7F4v8vHTvxFbL"
+  "GpMZbSM2GgvTKHJirzeGfMFoaZ8UR2X7F4v8vHTvxFbL",
 );
 
 /** Fee rates */
@@ -72,11 +73,16 @@ export const RAYDIUM_CPMM_OBSERVATION_STATE_SEED = Buffer.from("observation");
 export function getRaydiumCpmmPoolPda(
   ammConfig: PublicKey,
   mint1: PublicKey,
-  mint2: PublicKey
+  mint2: PublicKey,
 ): PublicKey {
   const [pda] = PublicKey.findProgramAddressSync(
-    [RAYDIUM_CPMM_POOL_SEED, ammConfig.toBuffer(), mint1.toBuffer(), mint2.toBuffer()],
-    RAYDIUM_CPMM_PROGRAM_ID
+    [
+      RAYDIUM_CPMM_POOL_SEED,
+      ammConfig.toBuffer(),
+      mint1.toBuffer(),
+      mint2.toBuffer(),
+    ],
+    RAYDIUM_CPMM_PROGRAM_ID,
   );
   return pda;
 }
@@ -84,10 +90,13 @@ export function getRaydiumCpmmPoolPda(
 /**
  * Derive the vault PDA for a pool and mint
  */
-export function getRaydiumCpmmVaultPda(poolState: PublicKey, mint: PublicKey): PublicKey {
+export function getRaydiumCpmmVaultPda(
+  poolState: PublicKey,
+  mint: PublicKey,
+): PublicKey {
   const [pda] = PublicKey.findProgramAddressSync(
     [RAYDIUM_CPMM_POOL_VAULT_SEED, poolState.toBuffer(), mint.toBuffer()],
-    RAYDIUM_CPMM_PROGRAM_ID
+    RAYDIUM_CPMM_PROGRAM_ID,
   );
   return pda;
 }
@@ -95,10 +104,12 @@ export function getRaydiumCpmmVaultPda(poolState: PublicKey, mint: PublicKey): P
 /**
  * Derive the observation state PDA for a pool
  */
-export function getRaydiumCpmmObservationStatePda(poolState: PublicKey): PublicKey {
+export function getRaydiumCpmmObservationStatePda(
+  poolState: PublicKey,
+): PublicKey {
   const [pda] = PublicKey.findProgramAddressSync(
     [RAYDIUM_CPMM_OBSERVATION_STATE_SEED, poolState.toBuffer()],
-    RAYDIUM_CPMM_PROGRAM_ID
+    RAYDIUM_CPMM_PROGRAM_ID,
   );
   return pda;
 }
@@ -115,7 +126,7 @@ export function computeRaydiumCpmmSwapAmount(
   quoteReserve: bigint,
   isBaseIn: boolean,
   amountIn: bigint,
-  slippageBasisPoints: bigint
+  slippageBasisPoints: bigint,
 ): { amountOut: bigint; minAmountOut: bigint } {
   // Apply trade fee (0.25%)
   const feeRate = RAYDIUM_CPMM_TRADE_FEE_RATE;
@@ -135,7 +146,8 @@ export function computeRaydiumCpmmSwapAmount(
   }
 
   // Apply slippage
-  const minAmountOut = amountOut - (amountOut * slippageBasisPoints) / BigInt(10000);
+  const minAmountOut =
+    amountOut - (amountOut * slippageBasisPoints) / BigInt(10000);
 
   return { amountOut, minAmountOut };
 }
@@ -190,7 +202,7 @@ export interface BuildRaydiumCpmmSellInstructionsParams {
  * Build buy instructions for Raydium CPMM protocol
  */
 export function buildRaydiumCpmmBuyInstructions(
-  params: BuildRaydiumCpmmBuyInstructionsParams
+  params: BuildRaydiumCpmmBuyInstructionsParams,
 ): TransactionInstruction[] {
   const {
     payer,
@@ -211,8 +223,12 @@ export function buildRaydiumCpmmBuyInstructions(
   const payerPubkey = payer instanceof Keypair ? payer.publicKey : payer;
   const instructions: TransactionInstruction[] = [];
 
-  const WSOL_TOKEN_ACCOUNT = new PublicKey("So11111111111111111111111111111111111111112");
-  const USDC_TOKEN_ACCOUNT = new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
+  const WSOL_TOKEN_ACCOUNT = new PublicKey(
+    "So11111111111111111111111111111111111111112",
+  );
+  const USDC_TOKEN_ACCOUNT = new PublicKey(
+    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  );
 
   const {
     ammConfig,
@@ -228,27 +244,34 @@ export function buildRaydiumCpmmBuyInstructions(
   } = protocolParams;
 
   // Check pool type
-  const isWsol = baseMint.equals(WSOL_TOKEN_ACCOUNT) || quoteMint.equals(WSOL_TOKEN_ACCOUNT);
-  const isUsdc = baseMint.equals(USDC_TOKEN_ACCOUNT) || quoteMint.equals(USDC_TOKEN_ACCOUNT);
+  const isWsol =
+    baseMint.equals(WSOL_TOKEN_ACCOUNT) || quoteMint.equals(WSOL_TOKEN_ACCOUNT);
+  const isUsdc =
+    baseMint.equals(USDC_TOKEN_ACCOUNT) || quoteMint.equals(USDC_TOKEN_ACCOUNT);
 
   if (!isWsol && !isUsdc) {
     throw new Error("Pool must contain WSOL or USDC");
   }
 
   // Determine swap direction
-  const isBaseIn = baseMint.equals(WSOL_TOKEN_ACCOUNT) || baseMint.equals(USDC_TOKEN_ACCOUNT);
+  const isBaseIn =
+    baseMint.equals(WSOL_TOKEN_ACCOUNT) || baseMint.equals(USDC_TOKEN_ACCOUNT);
   const inputMint = isBaseIn ? baseMint : quoteMint;
   const inputTokenProgram = isBaseIn ? baseTokenProgram : quoteTokenProgram;
   const expectedOutputMint = isBaseIn ? quoteMint : baseMint;
   const outputTokenProgram = isBaseIn ? quoteTokenProgram : baseTokenProgram;
   if (!outputMint.equals(expectedOutputMint)) {
-    throw new Error(`outputMint must match Raydium CPMM pool side ${expectedOutputMint.toBase58()}`);
+    throw new Error(
+      `outputMint must match Raydium CPMM pool side ${expectedOutputMint.toBase58()}`,
+    );
   }
 
   // Derive pool state
-  const poolState = protocolParams.poolState && !protocolParams.poolState.equals(PublicKey.default)
-    ? protocolParams.poolState
-    : getRaydiumCpmmPoolPda(ammConfig, baseMint, quoteMint);
+  const poolState =
+    protocolParams.poolState &&
+    !protocolParams.poolState.equals(PublicKey.default)
+      ? protocolParams.poolState
+      : getRaydiumCpmmPoolPda(ammConfig, baseMint, quoteMint);
 
   // Calculate output only for base-in swaps; fixed-output swaps pass max input directly.
   const minimumAmountOut =
@@ -258,7 +281,7 @@ export function buildRaydiumCpmmBuyInstructions(
       quoteReserve,
       isBaseIn,
       inputAmount,
-      slippageBasisPoints
+      slippageBasisPoints,
     ).minAmountOut;
 
   // Derive user token accounts
@@ -266,40 +289,57 @@ export function buildRaydiumCpmmBuyInstructions(
     inputMint,
     payerPubkey,
     true,
-    inputTokenProgram
+    inputTokenProgram,
   );
   const outputTokenAccount = getAssociatedTokenAddressSync(
     outputMint,
     payerPubkey,
     true,
-    outputTokenProgram
+    outputTokenProgram,
   );
 
   // Derive vault accounts
   const inputVaultAccount = ((): PublicKey => {
-    if (baseMint.equals(inputMint) && baseVault && !baseVault.equals(PublicKey.default)) {
+    if (
+      baseMint.equals(inputMint) &&
+      baseVault &&
+      !baseVault.equals(PublicKey.default)
+    ) {
       return baseVault;
     }
-    if (quoteMint.equals(inputMint) && quoteVault && !quoteVault.equals(PublicKey.default)) {
+    if (
+      quoteMint.equals(inputMint) &&
+      quoteVault &&
+      !quoteVault.equals(PublicKey.default)
+    ) {
       return quoteVault;
     }
     return getRaydiumCpmmVaultPda(poolState, inputMint);
   })();
 
   const outputVaultAccount = ((): PublicKey => {
-    if (baseMint.equals(outputMint) && baseVault && !baseVault.equals(PublicKey.default)) {
+    if (
+      baseMint.equals(outputMint) &&
+      baseVault &&
+      !baseVault.equals(PublicKey.default)
+    ) {
       return baseVault;
     }
-    if (quoteMint.equals(outputMint) && quoteVault && !quoteVault.equals(PublicKey.default)) {
+    if (
+      quoteMint.equals(outputMint) &&
+      quoteVault &&
+      !quoteVault.equals(PublicKey.default)
+    ) {
       return quoteVault;
     }
     return getRaydiumCpmmVaultPda(poolState, outputMint);
   })();
 
   // Derive observation state
-  const observationStateAccount = observationState && !observationState.equals(PublicKey.default)
-    ? observationState
-    : getRaydiumCpmmObservationStatePda(poolState);
+  const observationStateAccount =
+    observationState && !observationState.equals(PublicKey.default)
+      ? observationState
+      : getRaydiumCpmmObservationStatePda(poolState);
 
   // Handle input account creation/wrapping
   if (createInputMintAta) {
@@ -310,8 +350,8 @@ export function buildRaydiumCpmmBuyInstructions(
         inputTokenAccount,
         payerPubkey,
         inputMint,
-        inputTokenProgram
-      )
+        inputTokenProgram,
+      ),
     );
     if (isInputWsol) {
       instructions.push(
@@ -319,7 +359,7 @@ export function buildRaydiumCpmmBuyInstructions(
           fromPubkey: payerPubkey,
           toPubkey: inputTokenAccount,
           lamports: inputAmount,
-        })
+        }),
       );
       instructions.push(createSyncNativeInstruction(inputTokenAccount));
     }
@@ -333,8 +373,8 @@ export function buildRaydiumCpmmBuyInstructions(
         outputTokenAccount,
         payerPubkey,
         outputMint,
-        outputTokenProgram
-      )
+        outputTokenProgram,
+      ),
     );
   }
 
@@ -369,13 +409,19 @@ export function buildRaydiumCpmmBuyInstructions(
       keys: accounts,
       programId: RAYDIUM_CPMM_PROGRAM_ID,
       data,
-    })
+    }),
   );
 
   // Close WSOL ATA if requested
   if (closeInputMintAta && inputMint.equals(WSOL_TOKEN_ACCOUNT)) {
     instructions.push(
-      createCloseAccountInstruction(inputTokenAccount, payerPubkey, payerPubkey, [], inputTokenProgram)
+      createCloseAccountInstruction(
+        inputTokenAccount,
+        payerPubkey,
+        payerPubkey,
+        [],
+        inputTokenProgram,
+      ),
     );
   }
 
@@ -386,7 +432,7 @@ export function buildRaydiumCpmmBuyInstructions(
  * Build sell instructions for Raydium CPMM protocol
  */
 export function buildRaydiumCpmmSellInstructions(
-  params: BuildRaydiumCpmmSellInstructionsParams
+  params: BuildRaydiumCpmmSellInstructionsParams,
 ): TransactionInstruction[] {
   const {
     payer,
@@ -407,8 +453,12 @@ export function buildRaydiumCpmmSellInstructions(
   const payerPubkey = payer instanceof Keypair ? payer.publicKey : payer;
   const instructions: TransactionInstruction[] = [];
 
-  const WSOL_TOKEN_ACCOUNT = new PublicKey("So11111111111111111111111111111111111111112");
-  const USDC_TOKEN_ACCOUNT = new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
+  const WSOL_TOKEN_ACCOUNT = new PublicKey(
+    "So11111111111111111111111111111111111111112",
+  );
+  const USDC_TOKEN_ACCOUNT = new PublicKey(
+    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  );
 
   const {
     ammConfig,
@@ -424,27 +474,35 @@ export function buildRaydiumCpmmSellInstructions(
   } = protocolParams;
 
   // Check pool type
-  const isWsol = baseMint.equals(WSOL_TOKEN_ACCOUNT) || quoteMint.equals(WSOL_TOKEN_ACCOUNT);
-  const isUsdc = baseMint.equals(USDC_TOKEN_ACCOUNT) || quoteMint.equals(USDC_TOKEN_ACCOUNT);
+  const isWsol =
+    baseMint.equals(WSOL_TOKEN_ACCOUNT) || quoteMint.equals(WSOL_TOKEN_ACCOUNT);
+  const isUsdc =
+    baseMint.equals(USDC_TOKEN_ACCOUNT) || quoteMint.equals(USDC_TOKEN_ACCOUNT);
 
   if (!isWsol && !isUsdc) {
     throw new Error("Pool must contain WSOL or USDC");
   }
 
   // Determine swap direction
-  const isQuoteOut = quoteMint.equals(WSOL_TOKEN_ACCOUNT) || quoteMint.equals(USDC_TOKEN_ACCOUNT);
+  const isQuoteOut =
+    quoteMint.equals(WSOL_TOKEN_ACCOUNT) ||
+    quoteMint.equals(USDC_TOKEN_ACCOUNT);
   const expectedInputMint = isQuoteOut ? baseMint : quoteMint;
   const inputTokenProgram = isQuoteOut ? baseTokenProgram : quoteTokenProgram;
   const outputMint = isQuoteOut ? quoteMint : baseMint;
   const outputTokenProgram = isQuoteOut ? quoteTokenProgram : baseTokenProgram;
   if (!inputMint.equals(expectedInputMint)) {
-    throw new Error(`inputMint must match Raydium CPMM pool side ${expectedInputMint.toBase58()}`);
+    throw new Error(
+      `inputMint must match Raydium CPMM pool side ${expectedInputMint.toBase58()}`,
+    );
   }
 
   // Derive pool state
-  const poolState = protocolParams.poolState && !protocolParams.poolState.equals(PublicKey.default)
-    ? protocolParams.poolState
-    : getRaydiumCpmmPoolPda(ammConfig, baseMint, quoteMint);
+  const poolState =
+    protocolParams.poolState &&
+    !protocolParams.poolState.equals(PublicKey.default)
+      ? protocolParams.poolState
+      : getRaydiumCpmmPoolPda(ammConfig, baseMint, quoteMint);
 
   // Calculate output only for base-in swaps; fixed-output swaps pass max input directly.
   const minimumAmountOut =
@@ -454,7 +512,7 @@ export function buildRaydiumCpmmSellInstructions(
       quoteReserve,
       isQuoteOut,
       inputAmount,
-      slippageBasisPoints
+      slippageBasisPoints,
     ).minAmountOut;
 
   // Derive user token accounts
@@ -462,40 +520,57 @@ export function buildRaydiumCpmmSellInstructions(
     inputMint,
     payerPubkey,
     true,
-    inputTokenProgram
+    inputTokenProgram,
   );
   const outputTokenAccount = getAssociatedTokenAddressSync(
     outputMint,
     payerPubkey,
     true,
-    outputTokenProgram
+    outputTokenProgram,
   );
 
   // Derive vault accounts
   const inputVaultAccount = ((): PublicKey => {
-    if (baseMint.equals(inputMint) && baseVault && !baseVault.equals(PublicKey.default)) {
+    if (
+      baseMint.equals(inputMint) &&
+      baseVault &&
+      !baseVault.equals(PublicKey.default)
+    ) {
       return baseVault;
     }
-    if (quoteMint.equals(inputMint) && quoteVault && !quoteVault.equals(PublicKey.default)) {
+    if (
+      quoteMint.equals(inputMint) &&
+      quoteVault &&
+      !quoteVault.equals(PublicKey.default)
+    ) {
       return quoteVault;
     }
     return getRaydiumCpmmVaultPda(poolState, inputMint);
   })();
 
   const outputVaultAccount = ((): PublicKey => {
-    if (baseMint.equals(outputMint) && baseVault && !baseVault.equals(PublicKey.default)) {
+    if (
+      baseMint.equals(outputMint) &&
+      baseVault &&
+      !baseVault.equals(PublicKey.default)
+    ) {
       return baseVault;
     }
-    if (quoteMint.equals(outputMint) && quoteVault && !quoteVault.equals(PublicKey.default)) {
+    if (
+      quoteMint.equals(outputMint) &&
+      quoteVault &&
+      !quoteVault.equals(PublicKey.default)
+    ) {
       return quoteVault;
     }
     return getRaydiumCpmmVaultPda(poolState, outputMint);
   })();
 
   // Derive observation state
-  const observationStateAccount = observationState && !observationState.equals(PublicKey.default)
-    ? observationState
-    : getRaydiumCpmmObservationStatePda(poolState);
+  const observationStateAccount =
+    observationState && !observationState.equals(PublicKey.default)
+      ? observationState
+      : getRaydiumCpmmObservationStatePda(poolState);
 
   // Create output ATA for receiving if needed
   if (createOutputMintAta) {
@@ -505,8 +580,8 @@ export function buildRaydiumCpmmSellInstructions(
         outputTokenAccount,
         payerPubkey,
         outputMint,
-        outputTokenProgram
-      )
+        outputTokenProgram,
+      ),
     );
   }
 
@@ -541,13 +616,19 @@ export function buildRaydiumCpmmSellInstructions(
       keys: accounts,
       programId: RAYDIUM_CPMM_PROGRAM_ID,
       data,
-    })
+    }),
   );
 
   // Close WSOL ATA if requested
   if (closeOutputMintAta && outputMint.equals(WSOL_TOKEN_ACCOUNT)) {
     instructions.push(
-      createCloseAccountInstruction(outputTokenAccount, payerPubkey, payerPubkey, [], outputTokenProgram)
+      createCloseAccountInstruction(
+        outputTokenAccount,
+        payerPubkey,
+        payerPubkey,
+        [],
+        outputTokenProgram,
+      ),
     );
   }
 
@@ -559,8 +640,8 @@ export function buildRaydiumCpmmSellInstructions(
         payerPubkey,
         payerPubkey,
         [],
-        inputTokenProgram
-      )
+        inputTokenProgram,
+      ),
     );
   }
 
@@ -600,7 +681,9 @@ export interface RaydiumCPMMpoolState {
  * Decode a Raydium CPMM pool state from account data
  * 100% from Rust: src/instruction/utils/raydium_cpmm_types.rs pool_state_decode
  */
-export function decodeRaydiumCPMMpoolState(data: Buffer): RaydiumCPMMpoolState | null {
+export function decodeRaydiumCPMMpoolState(
+  data: Buffer,
+): RaydiumCPMMpoolState | null {
   if (data.length < RAYDIUM_CPMM_POOL_STATE_SIZE) {
     return null;
   }
@@ -731,8 +814,12 @@ export function decodeRaydiumCPMMpoolState(data: Buffer): RaydiumCPMMpoolState |
  * 100% from Rust: src/instruction/utils/raydium_cpmm.rs fetch_pool_state
  */
 export async function fetchRaydiumCPMMpoolState(
-  connection: { getAccountInfo: (pubkey: PublicKey) => Promise<{ value?: { data: Buffer } }> },
-  poolAddress: PublicKey
+  connection: {
+    getAccountInfo: (
+      pubkey: PublicKey,
+    ) => Promise<{ value?: { data: Buffer } }>;
+  },
+  poolAddress: PublicKey,
 ): Promise<RaydiumCPMMpoolState | null> {
   const account = await connection.getAccountInfo(poolAddress);
   if (!account?.value?.data) {
@@ -748,12 +835,12 @@ export async function fetchRaydiumCPMMpoolState(
 export function getRaydiumCPMMpoolPDA(
   ammConfig: PublicKey,
   mint1: PublicKey,
-  mint2: PublicKey
+  mint2: PublicKey,
 ): PublicKey {
-  const POOL_SEED = Buffer.from('pool');
+  const POOL_SEED = Buffer.from("pool");
   const [pda] = PublicKey.findProgramAddressSync(
     [POOL_SEED, ammConfig.toBuffer(), mint1.toBuffer(), mint2.toBuffer()],
-    RAYDIUM_CPMM_PROGRAM_ID
+    RAYDIUM_CPMM_PROGRAM_ID,
   );
   return pda;
 }
@@ -762,11 +849,14 @@ export function getRaydiumCPMMpoolPDA(
  * Get vault PDA for Raydium CPMM.
  * Seeds: ["pool_vault", pool_state, mint]
  */
-export function getRaydiumCPMMvaultPDA(poolState: PublicKey, mint: PublicKey): PublicKey {
-  const POOL_VAULT_SEED = Buffer.from('pool_vault');
+export function getRaydiumCPMMvaultPDA(
+  poolState: PublicKey,
+  mint: PublicKey,
+): PublicKey {
+  const POOL_VAULT_SEED = Buffer.from("pool_vault");
   const [pda] = PublicKey.findProgramAddressSync(
     [POOL_VAULT_SEED, poolState.toBuffer(), mint.toBuffer()],
-    RAYDIUM_CPMM_PROGRAM_ID
+    RAYDIUM_CPMM_PROGRAM_ID,
   );
   return pda;
 }
@@ -775,11 +865,13 @@ export function getRaydiumCPMMvaultPDA(poolState: PublicKey, mint: PublicKey): P
  * Get observation state PDA for Raydium CPMM.
  * Seeds: ["observation", pool_state]
  */
-export function getRaydiumCPMMobservationStatePDA(poolState: PublicKey): PublicKey {
-  const OBSERVATION_STATE_SEED = Buffer.from('observation');
+export function getRaydiumCPMMobservationStatePDA(
+  poolState: PublicKey,
+): PublicKey {
+  const OBSERVATION_STATE_SEED = Buffer.from("observation");
   const [pda] = PublicKey.findProgramAddressSync(
     [OBSERVATION_STATE_SEED, poolState.toBuffer()],
-    RAYDIUM_CPMM_PROGRAM_ID
+    RAYDIUM_CPMM_PROGRAM_ID,
   );
   return pda;
 }
@@ -790,11 +882,13 @@ export function getRaydiumCPMMobservationStatePDA(poolState: PublicKey): PublicK
  */
 export async function getRaydiumCPMMpoolTokenBalances(
   connection: {
-    getTokenAccountBalance: (pubkey: PublicKey) => Promise<{ value?: { amount: string } }>
+    getTokenAccountBalance: (
+      pubkey: PublicKey,
+    ) => Promise<{ value?: { amount: string } }>;
   },
   poolState: PublicKey,
   token0Mint: PublicKey,
-  token1Mint: PublicKey
+  token1Mint: PublicKey,
 ): Promise<{ token0Balance: bigint; token1Balance: bigint } | null> {
   try {
     const token0Vault = getRaydiumCPMMvaultPDA(poolState, token0Mint);
@@ -803,8 +897,8 @@ export async function getRaydiumCPMMpoolTokenBalances(
     const token0Result = await connection.getTokenAccountBalance(token0Vault);
     const token1Result = await connection.getTokenAccountBalance(token1Vault);
 
-    const token0Balance = BigInt(token0Result?.value?.amount ?? '0');
-    const token1Balance = BigInt(token1Result?.value?.amount ?? '0');
+    const token0Balance = BigInt(token0Result?.value?.amount ?? "0");
+    const token1Balance = BigInt(token1Result?.value?.amount ?? "0");
 
     return { token0Balance, token1Balance };
   } catch {

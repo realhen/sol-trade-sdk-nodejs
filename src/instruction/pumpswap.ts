@@ -1,3 +1,4 @@
+import { Buffer } from "buffer";
 /**
  * PumpSwap instruction builder - Production-grade implementation
  * 100% port from Rust sol-trade-sdk
@@ -8,14 +9,14 @@ import {
   TransactionInstruction,
   SystemProgram,
   SYSVAR_RENT_PUBKEY,
-} from '@solana/web3.js';
+} from "@solana/web3.js";
 import {
   TOKEN_PROGRAM,
   TOKEN_PROGRAM_2022,
   ASSOCIATED_TOKEN_PROGRAM,
   WSOL_TOKEN_ACCOUNT,
   USDC_TOKEN_ACCOUNT,
-} from '../constants';
+} from "../constants";
 import {
   calculateWithSlippageSell,
   buyQuoteInputInternalWithFees,
@@ -24,61 +25,89 @@ import {
   legacyPumpSwapFeeBasisPoints,
   pumpSwapFeeBasisPoints,
   type PumpSwapFeeBasisPoints,
-} from '../calc';
+} from "../calc";
 
 // ===== Constants from Rust: src/instruction/utils/pumpswap.rs =====
 
-export const PUMPSWAP_PROGRAM = new PublicKey('pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA');
-export const PUMPSWAP_PUMP_PROGRAM_ID = new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
-export const PUMPSWAP_FEE_PROGRAM = new PublicKey('pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ');
+export const PUMPSWAP_PROGRAM = new PublicKey(
+  "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+);
+export const PUMPSWAP_PUMP_PROGRAM_ID = new PublicKey(
+  "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+);
+export const PUMPSWAP_FEE_PROGRAM = new PublicKey(
+  "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ",
+);
 
 // Accounts
-export const PUMPSWAP_FEE_RECIPIENT = new PublicKey('62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV');
-export const PUMPSWAP_GLOBAL_ACCOUNT = new PublicKey('ADyA8hdefvWN2dbGGWFotbzWxrAvLW83WG6QCVXvJKqw');
-export const PUMPSWAP_EVENT_AUTHORITY = new PublicKey('GS4CU59F31iL7aR2Q8zVS8DRrcRnXX1yjQ66TqNVQnaR');
-export const PUMPSWAP_GLOBAL_VOLUME_ACCUMULATOR = new PublicKey('C2aFPdENg4A2HQsmrd5rTw5TaYBX5Ku887cWjbFKtZpw');
-export const PUMPSWAP_FEE_CONFIG = new PublicKey('5PHirr8joyTMp9JMm6nW7hNDVyEYdkzDqazxPD7RaTjx');
-export const PUMPSWAP_DEFAULT_COIN_CREATOR_VAULT_AUTHORITY = new PublicKey('8N3GDaZ2iwN65oxVatKTLPNooAVUJTbfiVJ1ahyqwjSk');
+export const PUMPSWAP_FEE_RECIPIENT = new PublicKey(
+  "62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV",
+);
+export const PUMPSWAP_GLOBAL_ACCOUNT = new PublicKey(
+  "ADyA8hdefvWN2dbGGWFotbzWxrAvLW83WG6QCVXvJKqw",
+);
+export const PUMPSWAP_EVENT_AUTHORITY = new PublicKey(
+  "GS4CU59F31iL7aR2Q8zVS8DRrcRnXX1yjQ66TqNVQnaR",
+);
+export const PUMPSWAP_GLOBAL_VOLUME_ACCUMULATOR = new PublicKey(
+  "C2aFPdENg4A2HQsmrd5rTw5TaYBX5Ku887cWjbFKtZpw",
+);
+export const PUMPSWAP_FEE_CONFIG = new PublicKey(
+  "5PHirr8joyTMp9JMm6nW7hNDVyEYdkzDqazxPD7RaTjx",
+);
+export const PUMPSWAP_DEFAULT_COIN_CREATOR_VAULT_AUTHORITY = new PublicKey(
+  "8N3GDaZ2iwN65oxVatKTLPNooAVUJTbfiVJ1ahyqwjSk",
+);
 
 // Mayhem fee recipients (use any one randomly)
 export const PUMPSWAP_MAYHEM_FEE_RECIPIENTS: PublicKey[] = [
-  new PublicKey('GesfTA3X2arioaHp8bbKdjG9vJtskViWACZoYvxp4twS'),
-  new PublicKey('4budycTjhs9fD6xw62VBducVTNgMgJJ5BgtKq7mAZwn6'),
-  new PublicKey('8SBKzEQU4nLSzcwF4a74F2iaUDQyTfjGndn6qUWBnrpR'),
-  new PublicKey('4UQeTP1T39KZ9Sfxzo3WR5skgsaP6NZa87BAkuazLEKH'),
-  new PublicKey('8sNeir4QsLsJdYpc9RZacohhK1Y5FLU3nC5LXgYB4aa6'),
-  new PublicKey('Fh9HmeLNUMVCvejxCtCL2DbYaRyBFVJ5xrWkLnMH6fdk'),
-  new PublicKey('463MEnMeGyJekNZFQSTUABBEbLnvMTALbT6ZmsxAbAdq'),
-  new PublicKey('6AUH3WEHucYZyC61hqpqYUWVto5qA5hjHuNQ32GNnNxA'),
+  new PublicKey("GesfTA3X2arioaHp8bbKdjG9vJtskViWACZoYvxp4twS"),
+  new PublicKey("4budycTjhs9fD6xw62VBducVTNgMgJJ5BgtKq7mAZwn6"),
+  new PublicKey("8SBKzEQU4nLSzcwF4a74F2iaUDQyTfjGndn6qUWBnrpR"),
+  new PublicKey("4UQeTP1T39KZ9Sfxzo3WR5skgsaP6NZa87BAkuazLEKH"),
+  new PublicKey("8sNeir4QsLsJdYpc9RZacohhK1Y5FLU3nC5LXgYB4aa6"),
+  new PublicKey("Fh9HmeLNUMVCvejxCtCL2DbYaRyBFVJ5xrWkLnMH6fdk"),
+  new PublicKey("463MEnMeGyJekNZFQSTUABBEbLnvMTALbT6ZmsxAbAdq"),
+  new PublicKey("6AUH3WEHucYZyC61hqpqYUWVto5qA5hjHuNQ32GNnNxA"),
 ];
 
 /** Protocol extra fee recipients (Apr 2026); after pool-v2: readonly, then quote ATA (mutable). */
 export const PUMPSWAP_PROTOCOL_EXTRA_FEE_RECIPIENTS: PublicKey[] = [
-  new PublicKey('5YxQFdt3Tr9zJLvkFccqXVUwhdTWJQc1fFg2YPbxvxeD'),
-  new PublicKey('9M4giFFMxmFGXtc3feFzRai56WbBqehoSeRE5GK7gf7'),
-  new PublicKey('GXPFM2caqTtQYC2cJ5yJRi9VDkpsYZXzYdwYpGnLmtDL'),
-  new PublicKey('3BpXnfJaUTiwXnJNe7Ej1rcbzqTTQUvLShZaWazebsVR'),
-  new PublicKey('5cjcW9wExnJJiqgLjq7DEG75Pm6JBgE1hNv4B2vHXUW6'),
-  new PublicKey('EHAAiTxcdDwQ3U4bU6YcMsQGaekdzLS3B5SmYo46kJtL'),
-  new PublicKey('5eHhjP8JaYkz83CWwvGU2uMUXefd3AazWGx4gpcuEEYD'),
-  new PublicKey('A7hAgCzFw14fejgCp387JUJRMNyz4j89JKnhtKU8piqW'),
+  new PublicKey("5YxQFdt3Tr9zJLvkFccqXVUwhdTWJQc1fFg2YPbxvxeD"),
+  new PublicKey("9M4giFFMxmFGXtc3feFzRai56WbBqehoSeRE5GK7gf7"),
+  new PublicKey("GXPFM2caqTtQYC2cJ5yJRi9VDkpsYZXzYdwYpGnLmtDL"),
+  new PublicKey("3BpXnfJaUTiwXnJNe7Ej1rcbzqTTQUvLShZaWazebsVR"),
+  new PublicKey("5cjcW9wExnJJiqgLjq7DEG75Pm6JBgE1hNv4B2vHXUW6"),
+  new PublicKey("EHAAiTxcdDwQ3U4bU6YcMsQGaekdzLS3B5SmYo46kJtL"),
+  new PublicKey("5eHhjP8JaYkz83CWwvGU2uMUXefd3AazWGx4gpcuEEYD"),
+  new PublicKey("A7hAgCzFw14fejgCp387JUJRMNyz4j89JKnhtKU8piqW"),
 ];
 
 // Discriminators
-export const PUMPSWAP_BUY_DISCRIMINATOR = Buffer.from([102, 6, 61, 18, 1, 218, 235, 234]);
-export const PUMPSWAP_BUY_EXACT_QUOTE_IN_DISCRIMINATOR = Buffer.from([198, 46, 21, 82, 180, 217, 232, 112]);
-export const PUMPSWAP_SELL_DISCRIMINATOR = Buffer.from([51, 230, 133, 164, 1, 127, 131, 173]);
-export const PUMPSWAP_CLAIM_CASHBACK_DISCRIMINATOR = Buffer.from([37, 58, 35, 126, 190, 53, 228, 197]);
-export const PUMPSWAP_POOL_DISCRIMINATOR = Buffer.from([241, 154, 109, 4, 17, 177, 109, 188]);
+export const PUMPSWAP_BUY_DISCRIMINATOR = Buffer.from([
+  102, 6, 61, 18, 1, 218, 235, 234,
+]);
+export const PUMPSWAP_BUY_EXACT_QUOTE_IN_DISCRIMINATOR = Buffer.from([
+  198, 46, 21, 82, 180, 217, 232, 112,
+]);
+export const PUMPSWAP_SELL_DISCRIMINATOR = Buffer.from([
+  51, 230, 133, 164, 1, 127, 131, 173,
+]);
+export const PUMPSWAP_CLAIM_CASHBACK_DISCRIMINATOR = Buffer.from([
+  37, 58, 35, 126, 190, 53, 228, 197,
+]);
+export const PUMPSWAP_POOL_DISCRIMINATOR = Buffer.from([
+  241, 154, 109, 4, 17, 177, 109, 188,
+]);
 
 // Seeds
-const POOL_V2_SEED = Buffer.from('pool-v2');
-const POOL_SEED = Buffer.from('pool');
-const POOL_AUTHORITY_SEED = Buffer.from('pool-authority');
-const USER_VOLUME_ACCUMULATOR_SEED = Buffer.from('user_volume_accumulator');
-const CREATOR_VAULT_SEED = Buffer.from('creator_vault');
-const FEE_CONFIG_SEED = Buffer.from('fee_config');
-const GLOBAL_VOLUME_ACCUMULATOR_SEED = Buffer.from('global_volume_accumulator');
+const POOL_V2_SEED = Buffer.from("pool-v2");
+const POOL_SEED = Buffer.from("pool");
+const POOL_AUTHORITY_SEED = Buffer.from("pool-authority");
+const USER_VOLUME_ACCUMULATOR_SEED = Buffer.from("user_volume_accumulator");
+const CREATOR_VAULT_SEED = Buffer.from("creator_vault");
+const FEE_CONFIG_SEED = Buffer.from("fee_config");
+const GLOBAL_VOLUME_ACCUMULATOR_SEED = Buffer.from("global_volume_accumulator");
 
 // ===== PDA Derivation Functions =====
 
@@ -86,7 +115,9 @@ const GLOBAL_VOLUME_ACCUMULATOR_SEED = Buffer.from('global_volume_accumulator');
  * Get a random Mayhem fee recipient
  */
 export function getMayhemFeeRecipientRandom(): PublicKey {
-  const index = Math.floor(Math.random() * PUMPSWAP_MAYHEM_FEE_RECIPIENTS.length);
+  const index = Math.floor(
+    Math.random() * PUMPSWAP_MAYHEM_FEE_RECIPIENTS.length,
+  );
   const recipient = PUMPSWAP_MAYHEM_FEE_RECIPIENTS[index];
   if (!recipient) {
     return PUMPSWAP_MAYHEM_FEE_RECIPIENTS[0]!;
@@ -99,8 +130,13 @@ export function getPumpSwapProtocolFeeRecipientRandom(): PublicKey {
 }
 
 export function getPumpSwapProtocolExtraFeeRecipientRandom(): PublicKey {
-  const index = Math.floor(Math.random() * PUMPSWAP_PROTOCOL_EXTRA_FEE_RECIPIENTS.length);
-  return PUMPSWAP_PROTOCOL_EXTRA_FEE_RECIPIENTS[index] ?? PUMPSWAP_PROTOCOL_EXTRA_FEE_RECIPIENTS[0]!;
+  const index = Math.floor(
+    Math.random() * PUMPSWAP_PROTOCOL_EXTRA_FEE_RECIPIENTS.length,
+  );
+  return (
+    PUMPSWAP_PROTOCOL_EXTRA_FEE_RECIPIENTS[index] ??
+    PUMPSWAP_PROTOCOL_EXTRA_FEE_RECIPIENTS[0]!
+  );
 }
 
 /**
@@ -109,7 +145,7 @@ export function getPumpSwapProtocolExtraFeeRecipientRandom(): PublicKey {
 export function getPoolV2PDA(baseMint: PublicKey): PublicKey {
   const [pda] = PublicKey.findProgramAddressSync(
     [POOL_V2_SEED, baseMint.toBuffer()],
-    PUMPSWAP_PROGRAM
+    PUMPSWAP_PROGRAM,
   );
   return pda;
 }
@@ -120,7 +156,7 @@ export function getPoolV2PDA(baseMint: PublicKey): PublicKey {
 export function getPumpPoolAuthorityPDA(mint: PublicKey): PublicKey {
   const [pda] = PublicKey.findProgramAddressSync(
     [POOL_AUTHORITY_SEED, mint.toBuffer()],
-    PUMPSWAP_PUMP_PROGRAM_ID
+    PUMPSWAP_PUMP_PROGRAM_ID,
   );
   return pda;
 }
@@ -133,8 +169,14 @@ export function getCanonicalPoolPDA(mint: PublicKey): PublicKey {
   const index = Buffer.alloc(2);
   index.writeUInt16LE(0);
   const [pda] = PublicKey.findProgramAddressSync(
-    [POOL_SEED, index, authority.toBuffer(), mint.toBuffer(), WSOL_TOKEN_ACCOUNT.toBuffer()],
-    PUMPSWAP_PROGRAM
+    [
+      POOL_SEED,
+      index,
+      authority.toBuffer(),
+      mint.toBuffer(),
+      WSOL_TOKEN_ACCOUNT.toBuffer(),
+    ],
+    PUMPSWAP_PROGRAM,
   );
   return pda;
 }
@@ -142,10 +184,12 @@ export function getCanonicalPoolPDA(mint: PublicKey): PublicKey {
 /**
  * Coin creator vault authority PDA
  */
-export function getCoinCreatorVaultAuthority(coinCreator: PublicKey): PublicKey {
+export function getCoinCreatorVaultAuthority(
+  coinCreator: PublicKey,
+): PublicKey {
   const [pda] = PublicKey.findProgramAddressSync(
     [CREATOR_VAULT_SEED, coinCreator.toBuffer()],
-    PUMPSWAP_PROGRAM
+    PUMPSWAP_PROGRAM,
   );
   return pda;
 }
@@ -156,7 +200,7 @@ export function getCoinCreatorVaultAuthority(coinCreator: PublicKey): PublicKey 
 export function getCoinCreatorVaultAta(
   coinCreator: PublicKey,
   quoteMint: PublicKey,
-  quoteTokenProgram: PublicKey = TOKEN_PROGRAM
+  quoteTokenProgram: PublicKey = TOKEN_PROGRAM,
 ): PublicKey {
   const authority = getCoinCreatorVaultAuthority(coinCreator);
   return getAssociatedTokenAddress(authority, quoteMint, quoteTokenProgram);
@@ -168,7 +212,7 @@ export function getCoinCreatorVaultAta(
 export function getFeeRecipientAta(
   feeRecipient: PublicKey,
   quoteMint: PublicKey,
-  quoteTokenProgram: PublicKey = TOKEN_PROGRAM
+  quoteTokenProgram: PublicKey = TOKEN_PROGRAM,
 ): PublicKey {
   return getAssociatedTokenAddress(feeRecipient, quoteMint, quoteTokenProgram);
 }
@@ -179,7 +223,7 @@ export function getFeeRecipientAta(
 export function getUserVolumeAccumulatorPDA(user: PublicKey): PublicKey {
   const [pda] = PublicKey.findProgramAddressSync(
     [USER_VOLUME_ACCUMULATOR_SEED, user.toBuffer()],
-    PUMPSWAP_PROGRAM
+    PUMPSWAP_PROGRAM,
   );
   return pda;
 }
@@ -189,7 +233,11 @@ export function getUserVolumeAccumulatorPDA(user: PublicKey): PublicKey {
  */
 export function getUserVolumeAccumulatorWsolAta(user: PublicKey): PublicKey {
   const accumulator = getUserVolumeAccumulatorPDA(user);
-  return getAssociatedTokenAddress(accumulator, WSOL_TOKEN_ACCOUNT, TOKEN_PROGRAM);
+  return getAssociatedTokenAddress(
+    accumulator,
+    WSOL_TOKEN_ACCOUNT,
+    TOKEN_PROGRAM,
+  );
 }
 
 /**
@@ -198,7 +246,7 @@ export function getUserVolumeAccumulatorWsolAta(user: PublicKey): PublicKey {
 export function getUserVolumeAccumulatorQuoteAta(
   user: PublicKey,
   quoteMint: PublicKey,
-  quoteTokenProgram: PublicKey
+  quoteTokenProgram: PublicKey,
 ): PublicKey {
   const accumulator = getUserVolumeAccumulatorPDA(user);
   return getAssociatedTokenAddress(accumulator, quoteMint, quoteTokenProgram);
@@ -211,7 +259,7 @@ export function getUserVolumeAccumulatorQuoteAta(
 export function getGlobalVolumeAccumulatorPDA(): PublicKey {
   const [pda] = PublicKey.findProgramAddressSync(
     [GLOBAL_VOLUME_ACCUMULATOR_SEED],
-    PUMPSWAP_PROGRAM
+    PUMPSWAP_PROGRAM,
   );
   return pda;
 }
@@ -222,11 +270,11 @@ export function getGlobalVolumeAccumulatorPDA(): PublicKey {
 export function getAssociatedTokenAddress(
   owner: PublicKey,
   mint: PublicKey,
-  tokenProgram: PublicKey = TOKEN_PROGRAM
+  tokenProgram: PublicKey = TOKEN_PROGRAM,
 ): PublicKey {
   const [ata] = PublicKey.findProgramAddressSync(
     [owner.toBuffer(), tokenProgram.toBuffer(), mint.toBuffer()],
-    ASSOCIATED_TOKEN_PROGRAM
+    ASSOCIATED_TOKEN_PROGRAM,
   );
   return ata;
 }
@@ -237,13 +285,25 @@ export function getAssociatedTokenAddress(
  * Create WSOL ATA and wrap SOL
  * Returns instructions for: create ATA (idempotent), transfer SOL, sync_native
  */
-export function handleWsol(owner: PublicKey, amount: bigint): TransactionInstruction[] {
-  const wsolAta = getAssociatedTokenAddress(owner, WSOL_TOKEN_ACCOUNT, TOKEN_PROGRAM);
+export function handleWsol(
+  owner: PublicKey,
+  amount: bigint,
+): TransactionInstruction[] {
+  const wsolAta = getAssociatedTokenAddress(
+    owner,
+    WSOL_TOKEN_ACCOUNT,
+    TOKEN_PROGRAM,
+  );
   const instructions: TransactionInstruction[] = [];
 
   // Create ATA (idempotent)
   instructions.push(
-    createAssociatedTokenAccountIdempotent(owner, owner, WSOL_TOKEN_ACCOUNT, TOKEN_PROGRAM)
+    createAssociatedTokenAccountIdempotent(
+      owner,
+      owner,
+      WSOL_TOKEN_ACCOUNT,
+      TOKEN_PROGRAM,
+    ),
   );
 
   // Transfer SOL to WSOL ATA
@@ -252,7 +312,7 @@ export function handleWsol(owner: PublicKey, amount: bigint): TransactionInstruc
       fromPubkey: owner,
       toPubkey: wsolAta,
       lamports: Number(amount),
-    })
+    }),
   );
 
   // Sync native
@@ -261,7 +321,7 @@ export function handleWsol(owner: PublicKey, amount: bigint): TransactionInstruc
       keys: [{ pubkey: wsolAta, isSigner: false, isWritable: true }],
       programId: TOKEN_PROGRAM,
       data: Buffer.from([17]), // sync_native discriminator
-    })
+    }),
   );
 
   return instructions;
@@ -271,19 +331,25 @@ function handleWsolForMint(
   owner: PublicKey,
   mint: PublicKey,
   tokenProgram: PublicKey,
-  amount: bigint
+  amount: bigint,
 ): TransactionInstruction[] {
   if (mint.equals(WSOL_TOKEN_ACCOUNT)) {
     return handleWsol(owner, amount);
   }
-  return [createAssociatedTokenAccountIdempotent(owner, owner, mint, tokenProgram)];
+  return [
+    createAssociatedTokenAccountIdempotent(owner, owner, mint, tokenProgram),
+  ];
 }
 
 /**
  * Close WSOL ATA and reclaim rent
  */
 export function closeWsol(owner: PublicKey): TransactionInstruction {
-  const wsolAta = getAssociatedTokenAddress(owner, WSOL_TOKEN_ACCOUNT, TOKEN_PROGRAM);
+  const wsolAta = getAssociatedTokenAddress(
+    owner,
+    WSOL_TOKEN_ACCOUNT,
+    TOKEN_PROGRAM,
+  );
   return new TransactionInstruction({
     keys: [
       { pubkey: wsolAta, isSigner: false, isWritable: true },
@@ -291,14 +357,14 @@ export function closeWsol(owner: PublicKey): TransactionInstruction {
       { pubkey: owner, isSigner: true, isWritable: false },
     ],
     programId: TOKEN_PROGRAM,
-    data: Buffer.from([9, 0, 0, 0, 0, 0, 0, 0]), // close_account discriminator
+    data: Buffer.from([9]), // close_account discriminator
   });
 }
 
 function closeWsolForMint(
   owner: PublicKey,
   mint: PublicKey,
-  tokenProgram: PublicKey
+  tokenProgram: PublicKey,
 ): TransactionInstruction | undefined {
   if (!mint.equals(WSOL_TOKEN_ACCOUNT)) {
     return undefined;
@@ -311,7 +377,7 @@ function closeWsolForMint(
       { pubkey: owner, isSigner: true, isWritable: false },
     ],
     programId: tokenProgram,
-    data: Buffer.from([9, 0, 0, 0, 0, 0, 0, 0]),
+    data: Buffer.from([9]),
   });
 }
 
@@ -322,10 +388,10 @@ export function createAssociatedTokenAccountIdempotent(
   payer: PublicKey,
   owner: PublicKey,
   mint: PublicKey,
-  tokenProgram: PublicKey = TOKEN_PROGRAM
+  tokenProgram: PublicKey = TOKEN_PROGRAM,
 ): TransactionInstruction {
   const ata = getAssociatedTokenAddress(owner, mint, tokenProgram);
-  
+
   return new TransactionInstruction({
     keys: [
       { pubkey: payer, isSigner: true, isWritable: true },
@@ -345,6 +411,10 @@ export function createAssociatedTokenAccountIdempotent(
 // ===== Params Interface =====
 
 export interface PumpSwapParams {
+  /** Validated protocol fee recipient; otherwise uses the upstream protocol default. */
+  feeRecipient?: PublicKey;
+  /** Validated buyback fee recipient; otherwise uses the upstream random pool. */
+  buybackFeeRecipient?: PublicKey;
   pool: PublicKey;
   baseMint: PublicKey;
   quoteMint: PublicKey;
@@ -374,7 +444,11 @@ export interface BuildBuyParams {
   closeInputMintAta?: boolean;
   createOutputMintAta?: boolean;
   useExactQuoteAmount?: boolean;
+  /** Whether buy tracks volume; defaults to true. */
+  trackVolume?: boolean;
   fixedOutputAmount?: bigint;
+  /** Caller-validated minimum output in atomic units; skips SDK quote math. Buy requires exact-input mode. */
+  minimumOutputAmount?: bigint;
 }
 
 export interface BuildSellParams {
@@ -386,22 +460,31 @@ export interface BuildSellParams {
   closeOutputMintAta?: boolean;
   closeInputMintAta?: boolean;
   fixedOutputAmount?: bigint;
+  /** Caller-validated minimum output in atomic units; skips SDK quote math. Buy requires exact-input mode. */
+  minimumOutputAmount?: bigint;
 }
 
 // ===== Instruction Builders =====
 
-function getEffectiveFeeBasisPoints(protocolParams: PumpSwapParams): PumpSwapFeeBasisPoints {
-  const hasCoinCreator = protocolParams.coinCreator === undefined
-    ? !protocolParams.coinCreatorVaultAuthority.equals(PUMPSWAP_DEFAULT_COIN_CREATOR_VAULT_AUTHORITY)
-    : !protocolParams.coinCreator.equals(PublicKey.default);
-  const cashbackFeeBasisPoints = protocolParams.cashbackFeeBasisPoints ?? BigInt(0);
+function getEffectiveFeeBasisPoints(
+  protocolParams: PumpSwapParams,
+): PumpSwapFeeBasisPoints {
+  const hasCoinCreator =
+    protocolParams.coinCreator === undefined
+      ? !protocolParams.coinCreatorVaultAuthority.equals(
+          PUMPSWAP_DEFAULT_COIN_CREATOR_VAULT_AUTHORITY,
+        )
+      : !protocolParams.coinCreator.equals(PublicKey.default);
+  const cashbackFeeBasisPoints =
+    protocolParams.cashbackFeeBasisPoints ?? BigInt(0);
 
   if (protocolParams.feeBasisPoints) {
     return pumpSwapFeeBasisPoints(
       protocolParams.feeBasisPoints.lpFeeBasisPoints,
       protocolParams.feeBasisPoints.protocolFeeBasisPoints,
-      (hasCoinCreator ? protocolParams.feeBasisPoints.coinCreatorFeeBasisPoints : BigInt(0)) +
-        cashbackFeeBasisPoints
+      (hasCoinCreator
+        ? protocolParams.feeBasisPoints.coinCreatorFeeBasisPoints
+        : BigInt(0)) + cashbackFeeBasisPoints,
     );
   }
 
@@ -409,7 +492,7 @@ function getEffectiveFeeBasisPoints(protocolParams: PumpSwapParams): PumpSwapFee
   return pumpSwapFeeBasisPoints(
     fallback.lpFeeBasisPoints,
     fallback.protocolFeeBasisPoints,
-    fallback.coinCreatorFeeBasisPoints + cashbackFeeBasisPoints
+    fallback.coinCreatorFeeBasisPoints + cashbackFeeBasisPoints,
   );
 }
 
@@ -417,7 +500,9 @@ function getEffectiveFeeBasisPoints(protocolParams: PumpSwapParams): PumpSwapFee
  * Build buy instructions for PumpSwap
  * 100% port from Rust: src/instruction/pumpswap.rs build_buy_instructions
  */
-export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruction[] {
+export function buildBuyInstructions(
+  params: BuildBuyParams,
+): TransactionInstruction[] {
   const {
     payer,
     inputAmount,
@@ -431,7 +516,7 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
   } = params;
 
   if (inputAmount === 0n) {
-    throw new Error('Amount cannot be zero');
+    throw new Error("Amount cannot be zero");
   }
 
   const {
@@ -453,18 +538,26 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
   effectiveQuoteReserves(poolQuoteTokenReserves, virtualQuoteReserves);
 
   // Check if pool contains WSOL or USDC
-  const isWsol = quoteMint.equals(WSOL_TOKEN_ACCOUNT) || baseMint.equals(WSOL_TOKEN_ACCOUNT);
-  const isUsdc = quoteMint.equals(USDC_TOKEN_ACCOUNT) || baseMint.equals(USDC_TOKEN_ACCOUNT);
-  
+  const isWsol =
+    quoteMint.equals(WSOL_TOKEN_ACCOUNT) || baseMint.equals(WSOL_TOKEN_ACCOUNT);
+  const isUsdc =
+    quoteMint.equals(USDC_TOKEN_ACCOUNT) || baseMint.equals(USDC_TOKEN_ACCOUNT);
+
   if (!isWsol && !isUsdc) {
-    throw new Error('Pool must contain WSOL or USDC');
+    throw new Error("Pool must contain WSOL or USDC");
   }
 
-  const quoteIsWsolOrUsdc = quoteMint.equals(WSOL_TOKEN_ACCOUNT) || quoteMint.equals(USDC_TOKEN_ACCOUNT);
+  const quoteIsWsolOrUsdc =
+    quoteMint.equals(WSOL_TOKEN_ACCOUNT) ||
+    quoteMint.equals(USDC_TOKEN_ACCOUNT);
   const inputStableMint = quoteIsWsolOrUsdc ? quoteMint : baseMint;
-  const inputStableTokenProgram = quoteIsWsolOrUsdc ? quoteTokenProgram : baseTokenProgram;
+  const inputStableTokenProgram = quoteIsWsolOrUsdc
+    ? quoteTokenProgram
+    : baseTokenProgram;
   const outputTradeMint = quoteIsWsolOrUsdc ? baseMint : quoteMint;
-  const outputTradeTokenProgram = quoteIsWsolOrUsdc ? baseTokenProgram : quoteTokenProgram;
+  const outputTradeTokenProgram = quoteIsWsolOrUsdc
+    ? baseTokenProgram
+    : quoteTokenProgram;
 
   const feeBasisPoints = getEffectiveFeeBasisPoints(protocolParams);
 
@@ -472,7 +565,17 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
   let tokenAmount: bigint;
   let solAmount: bigint;
 
-  if (quoteIsWsolOrUsdc) {
+  if (params.minimumOutputAmount !== undefined) {
+    if (
+      fixedOutputAmount !== undefined ||
+      !useExactQuoteAmount ||
+      !quoteIsWsolOrUsdc
+    ) {
+      throw new Error("minimumOutputAmount requires exact quote-input buy");
+    }
+    tokenAmount = params.minimumOutputAmount;
+    solAmount = inputAmount;
+  } else if (quoteIsWsolOrUsdc) {
     // Buying base with quote (WSOL/USDC)
     const result = buyQuoteInputInternalWithFees(
       inputAmount,
@@ -480,7 +583,7 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
       poolBaseTokenReserves,
       poolQuoteTokenReserves,
       virtualQuoteReserves,
-      feeBasisPoints
+      feeBasisPoints,
     );
     tokenAmount = result.base;
     solAmount = result.maxQuote;
@@ -491,7 +594,7 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
       poolBaseTokenReserves,
       poolQuoteTokenReserves,
       virtualQuoteReserves,
-      feeBasisPoints
+      feeBasisPoints,
     );
     tokenAmount = result.minQuote;
     solAmount = inputAmount;
@@ -503,12 +606,28 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
   }
 
   // Get user token accounts
-  const userBaseTokenAccount = getAssociatedTokenAddress(payer, baseMint, baseTokenProgram);
-  const userQuoteTokenAccount = getAssociatedTokenAddress(payer, quoteMint, quoteTokenProgram);
+  const userBaseTokenAccount = getAssociatedTokenAddress(
+    payer,
+    baseMint,
+    baseTokenProgram,
+  );
+  const userQuoteTokenAccount = getAssociatedTokenAddress(
+    payer,
+    quoteMint,
+    quoteTokenProgram,
+  );
 
   // Determine fee recipient
-  const feeRecipient = isMayhemMode ? getMayhemFeeRecipientRandom() : getPumpSwapProtocolFeeRecipientRandom();
-  const feeRecipientAta = getFeeRecipientAta(feeRecipient, quoteMint, quoteTokenProgram);
+  const feeRecipient =
+    protocolParams.feeRecipient ??
+    (isMayhemMode
+      ? getMayhemFeeRecipientRandom()
+      : getPumpSwapProtocolFeeRecipientRandom());
+  const feeRecipientAta = getFeeRecipientAta(
+    feeRecipient,
+    quoteMint,
+    quoteTokenProgram,
+  );
 
   // Build instructions
   const instructions: TransactionInstruction[] = [];
@@ -519,13 +638,25 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
     // - buy_exact_quote_in: program spends exactly input_amount, wrap input_amount
     // - buy: program may spend up to max_quote, wrap max_quote
     const wrapAmount = useExactQuoteAmount ? inputAmount : solAmount;
-    instructions.push(...handleWsolForMint(payer, inputStableMint, inputStableTokenProgram, wrapAmount));
+    instructions.push(
+      ...handleWsolForMint(
+        payer,
+        inputStableMint,
+        inputStableTokenProgram,
+        wrapAmount,
+      ),
+    );
   }
 
   // Create output token ATA if needed
   if (createOutputMintAta) {
     instructions.push(
-      createAssociatedTokenAccountIdempotent(payer, payer, outputTradeMint, outputTradeTokenProgram)
+      createAssociatedTokenAccountIdempotent(
+        payer,
+        payer,
+        outputTradeMint,
+        outputTradeTokenProgram,
+      ),
     );
   }
 
@@ -554,31 +685,50 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
 
   // Add volume accumulator accounts for quote (WSOL/USDC) buy
   if (quoteIsWsolOrUsdc) {
-    accounts.push(
-      { pubkey: PUMPSWAP_GLOBAL_VOLUME_ACCUMULATOR, isSigner: false, isWritable: true }
-    );
+    accounts.push({
+      pubkey: PUMPSWAP_GLOBAL_VOLUME_ACCUMULATOR,
+      isSigner: false,
+      isWritable: false,
+    });
     const userVolumeAccumulator = getUserVolumeAccumulatorPDA(payer);
-    accounts.push({ pubkey: userVolumeAccumulator, isSigner: false, isWritable: true });
+    accounts.push({
+      pubkey: userVolumeAccumulator,
+      isSigner: false,
+      isWritable: true,
+    });
   }
 
   // Add fee config and program
   accounts.push(
     { pubkey: PUMPSWAP_FEE_CONFIG, isSigner: false, isWritable: false },
-    { pubkey: PUMPSWAP_FEE_PROGRAM, isSigner: false, isWritable: false }
+    { pubkey: PUMPSWAP_FEE_PROGRAM, isSigner: false, isWritable: false },
   );
 
   // Add cashback WSOL ATA if needed
   if (isCashbackCoin) {
-    const wsolAta = getUserVolumeAccumulatorWsolAta(payer);
+    const wsolAta = getUserVolumeAccumulatorQuoteAta(
+      payer,
+      quoteMint,
+      quoteTokenProgram,
+    );
     accounts.push({ pubkey: wsolAta, isSigner: false, isWritable: true });
   }
 
-  if (protocolParams.coinCreator === undefined || !protocolParams.coinCreator.equals(PublicKey.default)) {
+  if (
+    protocolParams.coinCreator === undefined ||
+    !protocolParams.coinCreator.equals(PublicKey.default)
+  ) {
     const poolV2 = getPoolV2PDA(baseMint);
     accounts.push({ pubkey: poolV2, isSigner: false, isWritable: false });
   }
-  const protocolExtraFee = getPumpSwapProtocolExtraFeeRecipientRandom();
-  accounts.push({ pubkey: protocolExtraFee, isSigner: false, isWritable: false });
+  const protocolExtraFee =
+    protocolParams.buybackFeeRecipient ??
+    getPumpSwapProtocolExtraFeeRecipientRandom();
+  accounts.push({
+    pubkey: protocolExtraFee,
+    isSigner: false,
+    isWritable: false,
+  });
   accounts.push({
     pubkey: getFeeRecipientAta(protocolExtraFee, quoteMint, quoteTokenProgram),
     isSigner: false,
@@ -586,7 +736,7 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
   });
 
   // Build instruction data
-  const trackVolume = isCashbackCoin ? 1 : 0;
+  const trackVolume = params.trackVolume === false ? 0 : 1;
   let data: Buffer;
 
   if (fixedOutputAmount !== undefined) {
@@ -597,7 +747,9 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
     data[24] = trackVolume;
   } else if (quoteIsWsolOrUsdc && useExactQuoteAmount) {
     // buy_exact_quote_in(spendable_quote_in, min_base_amount_out, track_volume)
-    const minBaseAmountOut = calculateWithSlippageSell(tokenAmount, slippageBasisPoints);
+    const minBaseAmountOut =
+      params.minimumOutputAmount ??
+      calculateWithSlippageSell(tokenAmount, slippageBasisPoints);
     data = Buffer.alloc(25);
     PUMPSWAP_BUY_EXACT_QUOTE_IN_DISCRIMINATOR.copy(data, 0);
     data.writeBigUInt64LE(inputAmount, 8);
@@ -622,12 +774,17 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
       keys: accounts,
       programId: PUMPSWAP_PROGRAM,
       data,
-    })
+    }),
   );
 
   // Close WSOL ATA if requested
   if (closeInputMintAta) {
-    instructions.push(closeWsol(payer));
+    const closeInstruction = closeWsolForMint(
+      payer,
+      inputStableMint,
+      inputStableTokenProgram,
+    );
+    if (closeInstruction) instructions.push(closeInstruction);
   }
 
   return instructions;
@@ -637,7 +794,9 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
  * Build sell instructions for PumpSwap
  * 100% port from Rust: src/instruction/pumpswap.rs build_sell_instructions
  */
-export function buildSellInstructions(params: BuildSellParams): TransactionInstruction[] {
+export function buildSellInstructions(
+  params: BuildSellParams,
+): TransactionInstruction[] {
   const {
     payer,
     inputAmount,
@@ -650,7 +809,7 @@ export function buildSellInstructions(params: BuildSellParams): TransactionInstr
   } = params;
 
   if (inputAmount === 0n) {
-    throw new Error('Amount cannot be zero');
+    throw new Error("Amount cannot be zero");
   }
 
   const {
@@ -672,16 +831,22 @@ export function buildSellInstructions(params: BuildSellParams): TransactionInstr
   effectiveQuoteReserves(poolQuoteTokenReserves, virtualQuoteReserves);
 
   // Check if pool contains WSOL or USDC
-  const isWsol = quoteMint.equals(WSOL_TOKEN_ACCOUNT) || baseMint.equals(WSOL_TOKEN_ACCOUNT);
-  const isUsdc = quoteMint.equals(USDC_TOKEN_ACCOUNT) || baseMint.equals(USDC_TOKEN_ACCOUNT);
-  
+  const isWsol =
+    quoteMint.equals(WSOL_TOKEN_ACCOUNT) || baseMint.equals(WSOL_TOKEN_ACCOUNT);
+  const isUsdc =
+    quoteMint.equals(USDC_TOKEN_ACCOUNT) || baseMint.equals(USDC_TOKEN_ACCOUNT);
+
   if (!isWsol && !isUsdc) {
-    throw new Error('Pool must contain WSOL or USDC');
+    throw new Error("Pool must contain WSOL or USDC");
   }
 
-  const quoteIsWsolOrUsdc = quoteMint.equals(WSOL_TOKEN_ACCOUNT) || quoteMint.equals(USDC_TOKEN_ACCOUNT);
+  const quoteIsWsolOrUsdc =
+    quoteMint.equals(WSOL_TOKEN_ACCOUNT) ||
+    quoteMint.equals(USDC_TOKEN_ACCOUNT);
   const outputStableMint = quoteIsWsolOrUsdc ? quoteMint : baseMint;
-  const outputStableTokenProgram = quoteIsWsolOrUsdc ? quoteTokenProgram : baseTokenProgram;
+  const outputStableTokenProgram = quoteIsWsolOrUsdc
+    ? quoteTokenProgram
+    : baseTokenProgram;
 
   const feeBasisPoints = getEffectiveFeeBasisPoints(protocolParams);
 
@@ -689,7 +854,13 @@ export function buildSellInstructions(params: BuildSellParams): TransactionInstr
   let tokenAmount: bigint;
   let solAmount: bigint;
 
-  if (quoteIsWsolOrUsdc) {
+  if (params.minimumOutputAmount !== undefined) {
+    if (fixedOutputAmount !== undefined || !quoteIsWsolOrUsdc) {
+      throw new Error("minimumOutputAmount requires exact base-input sell");
+    }
+    tokenAmount = inputAmount;
+    solAmount = params.minimumOutputAmount;
+  } else if (quoteIsWsolOrUsdc) {
     // Selling base for quote (WSOL/USDC)
     tokenAmount = inputAmount;
     const result = sellBaseInputInternalWithFees(
@@ -698,7 +869,7 @@ export function buildSellInstructions(params: BuildSellParams): TransactionInstr
       poolBaseTokenReserves,
       poolQuoteTokenReserves,
       virtualQuoteReserves,
-      feeBasisPoints
+      feeBasisPoints,
     );
     solAmount = result.minQuote;
   } else {
@@ -708,7 +879,7 @@ export function buildSellInstructions(params: BuildSellParams): TransactionInstr
       poolBaseTokenReserves,
       poolQuoteTokenReserves,
       virtualQuoteReserves,
-      feeBasisPoints
+      feeBasisPoints,
     );
     tokenAmount = result.maxQuote;
     solAmount = result.base;
@@ -720,12 +891,28 @@ export function buildSellInstructions(params: BuildSellParams): TransactionInstr
   }
 
   // Get user token accounts
-  const userBaseTokenAccount = getAssociatedTokenAddress(payer, baseMint, baseTokenProgram);
-  const userQuoteTokenAccount = getAssociatedTokenAddress(payer, quoteMint, quoteTokenProgram);
+  const userBaseTokenAccount = getAssociatedTokenAddress(
+    payer,
+    baseMint,
+    baseTokenProgram,
+  );
+  const userQuoteTokenAccount = getAssociatedTokenAddress(
+    payer,
+    quoteMint,
+    quoteTokenProgram,
+  );
 
   // Determine fee recipient
-  const feeRecipient = isMayhemMode ? getMayhemFeeRecipientRandom() : getPumpSwapProtocolFeeRecipientRandom();
-  const feeRecipientAta = getFeeRecipientAta(feeRecipient, quoteMint, quoteTokenProgram);
+  const feeRecipient =
+    protocolParams.feeRecipient ??
+    (isMayhemMode
+      ? getMayhemFeeRecipientRandom()
+      : getPumpSwapProtocolFeeRecipientRandom());
+  const feeRecipientAta = getFeeRecipientAta(
+    feeRecipient,
+    quoteMint,
+    quoteTokenProgram,
+  );
 
   // Build instructions
   const instructions: TransactionInstruction[] = [];
@@ -733,7 +920,12 @@ export function buildSellInstructions(params: BuildSellParams): TransactionInstr
   // Create WSOL/USDC ATA if needed for receiving
   if (createOutputMintAta) {
     instructions.push(
-      createAssociatedTokenAccountIdempotent(payer, payer, outputStableMint, outputStableTokenProgram)
+      createAssociatedTokenAccountIdempotent(
+        payer,
+        payer,
+        outputStableMint,
+        outputStableTokenProgram,
+      ),
     );
   }
 
@@ -762,35 +954,54 @@ export function buildSellInstructions(params: BuildSellParams): TransactionInstr
 
   // Add volume accumulator accounts for non-quote sell
   if (!quoteIsWsolOrUsdc) {
-    accounts.push(
-      { pubkey: PUMPSWAP_GLOBAL_VOLUME_ACCUMULATOR, isSigner: false, isWritable: true }
-    );
+    accounts.push({
+      pubkey: PUMPSWAP_GLOBAL_VOLUME_ACCUMULATOR,
+      isSigner: false,
+      isWritable: false,
+    });
     const userVolumeAccumulator = getUserVolumeAccumulatorPDA(payer);
-    accounts.push({ pubkey: userVolumeAccumulator, isSigner: false, isWritable: true });
+    accounts.push({
+      pubkey: userVolumeAccumulator,
+      isSigner: false,
+      isWritable: true,
+    });
   }
 
   // Add fee config and program
   accounts.push(
     { pubkey: PUMPSWAP_FEE_CONFIG, isSigner: false, isWritable: false },
-    { pubkey: PUMPSWAP_FEE_PROGRAM, isSigner: false, isWritable: false }
+    { pubkey: PUMPSWAP_FEE_PROGRAM, isSigner: false, isWritable: false },
   );
 
   // Add cashback accounts if needed (sell uses quote ATA)
   if (isCashbackCoin) {
-    const quoteAta = getUserVolumeAccumulatorQuoteAta(payer, quoteMint, quoteTokenProgram);
+    const quoteAta = getUserVolumeAccumulatorQuoteAta(
+      payer,
+      quoteMint,
+      quoteTokenProgram,
+    );
     const userVolumeAccumulator = getUserVolumeAccumulatorPDA(payer);
     accounts.push(
       { pubkey: quoteAta, isSigner: false, isWritable: true },
-      { pubkey: userVolumeAccumulator, isSigner: false, isWritable: true }
+      { pubkey: userVolumeAccumulator, isSigner: false, isWritable: true },
     );
   }
 
-  if (protocolParams.coinCreator === undefined || !protocolParams.coinCreator.equals(PublicKey.default)) {
+  if (
+    protocolParams.coinCreator === undefined ||
+    !protocolParams.coinCreator.equals(PublicKey.default)
+  ) {
     const poolV2 = getPoolV2PDA(baseMint);
     accounts.push({ pubkey: poolV2, isSigner: false, isWritable: false });
   }
-  const protocolExtraFee = getPumpSwapProtocolExtraFeeRecipientRandom();
-  accounts.push({ pubkey: protocolExtraFee, isSigner: false, isWritable: false });
+  const protocolExtraFee =
+    protocolParams.buybackFeeRecipient ??
+    getPumpSwapProtocolExtraFeeRecipientRandom();
+  accounts.push({
+    pubkey: protocolExtraFee,
+    isSigner: false,
+    isWritable: false,
+  });
   accounts.push({
     pubkey: getFeeRecipientAta(protocolExtraFee, quoteMint, quoteTokenProgram),
     isSigner: false,
@@ -814,12 +1025,16 @@ export function buildSellInstructions(params: BuildSellParams): TransactionInstr
       keys: accounts,
       programId: PUMPSWAP_PROGRAM,
       data,
-    })
+    }),
   );
 
   // Close WSOL ATA if requested
   if (closeOutputMintAta) {
-    const closeIx = closeWsolForMint(payer, outputStableMint, outputStableTokenProgram);
+    const closeIx = closeWsolForMint(
+      payer,
+      outputStableMint,
+      outputStableTokenProgram,
+    );
     if (closeIx) {
       instructions.push(closeIx);
     }
@@ -827,7 +1042,9 @@ export function buildSellInstructions(params: BuildSellParams): TransactionInstr
 
   // Close base token account if requested
   if (closeInputMintAta) {
-    const inputTokenAccount = quoteIsWsolOrUsdc ? userBaseTokenAccount : userQuoteTokenAccount;
+    const inputTokenAccount = quoteIsWsolOrUsdc
+      ? userBaseTokenAccount
+      : userQuoteTokenAccount;
     const closeIx = new TransactionInstruction({
       keys: [
         { pubkey: inputTokenAccount, isSigner: false, isWritable: true },
@@ -835,7 +1052,7 @@ export function buildSellInstructions(params: BuildSellParams): TransactionInstr
         { pubkey: payer, isSigner: true, isWritable: false },
       ],
       programId: quoteIsWsolOrUsdc ? baseTokenProgram : quoteTokenProgram,
-      data: Buffer.from([9, 0, 0, 0, 0, 0, 0, 0]),
+      data: Buffer.from([9]),
     });
     instructions.push(closeIx);
   }
@@ -849,11 +1066,15 @@ export function buildSellInstructions(params: BuildSellParams): TransactionInstr
 export function buildClaimCashbackInstruction(
   payer: PublicKey,
   quoteMint: PublicKey,
-  quoteTokenProgram: PublicKey
+  quoteTokenProgram: PublicKey,
 ): TransactionInstruction {
   const userVolumeAccumulator = getUserVolumeAccumulatorPDA(payer);
   const userVolumeAccumulatorWsolAta = getUserVolumeAccumulatorWsolAta(payer);
-  const userWsolAta = getAssociatedTokenAddress(payer, quoteMint, quoteTokenProgram);
+  const userWsolAta = getAssociatedTokenAddress(
+    payer,
+    quoteMint,
+    quoteTokenProgram,
+  );
 
   const accounts = [
     { pubkey: payer, isSigner: true, isWritable: true },
@@ -918,7 +1139,12 @@ export interface PumpSwapFeeConfig {
  * Uses Borsh deserialization
  */
 export function decodePool(data: Buffer): PumpSwapPool | null {
-  const isFullAccount = [LEGACY_POOL_SIZE + 8, POOL_SIZE + 8, 300, 643].includes(data.length);
+  const isFullAccount = [
+    LEGACY_POOL_SIZE + 8,
+    POOL_SIZE + 8,
+    300,
+    643,
+  ].includes(data.length);
   if (isFullAccount) {
     if (!data.subarray(0, 8).equals(PUMPSWAP_POOL_DISCRIMINATOR)) {
       return null;
@@ -957,11 +1183,15 @@ export function decodePool(data: Buffer): PumpSwapPool | null {
     offset += 32;
 
     // pool_base_token_account: Pubkey
-    const poolBaseTokenAccount = new PublicKey(data.subarray(offset, offset + 32));
+    const poolBaseTokenAccount = new PublicKey(
+      data.subarray(offset, offset + 32),
+    );
     offset += 32;
 
     // pool_quote_token_account: Pubkey
-    const poolQuoteTokenAccount = new PublicKey(data.subarray(offset, offset + 32));
+    const poolQuoteTokenAccount = new PublicKey(
+      data.subarray(offset, offset + 32),
+    );
     offset += 32;
 
     // lp_supply: u64
@@ -980,9 +1210,8 @@ export function decodePool(data: Buffer): PumpSwapPool | null {
     const isCashbackCoin = data.readUInt8(offset) === 1;
     offset += 1;
 
-    const virtualQuoteReserves = data.length >= POOL_SIZE
-      ? readI128LE(data, offset)
-      : BigInt(0);
+    const virtualQuoteReserves =
+      data.length >= POOL_SIZE ? readI128LE(data, offset) : BigInt(0);
 
     return {
       poolBump,
@@ -1008,15 +1237,19 @@ export function decodePool(data: Buffer): PumpSwapPool | null {
 
 /**
  * Find a PumpSwap pool by mint
- * 
+ *
  * Search order (matches @pump-fun/pump-swap-sdk):
  * 1. Pool v2 PDA ["pool-v2", base_mint]
  * 2. Canonical pool PDA ["pool", 0, pumpPoolAuthority(mint), mint, WSOL]
  * 3. getProgramAccounts by base_mint / quote_mint
  */
 export async function findPoolByMint(
-  connection: { getAccountInfo: (pubkey: PublicKey) => Promise<{ value: { data: Buffer } | null }> },
-  mint: PublicKey
+  connection: {
+    getAccountInfo: (
+      pubkey: PublicKey,
+    ) => Promise<{ value: { data: Buffer } | null }>;
+  },
+  mint: PublicKey,
 ): Promise<{ poolAddress: PublicKey; pool: PumpSwapPool } | null> {
   // 1. Try Pool v2 PDA
   const poolV2 = getPoolV2PDA(mint);
@@ -1047,7 +1280,7 @@ export async function findPoolByMint(
 export function getFeeConfigPDA(): PublicKey {
   const [pda] = PublicKey.findProgramAddressSync(
     [FEE_CONFIG_SEED, PUMPSWAP_PROGRAM.toBuffer()],
-    new PublicKey('pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ')
+    new PublicKey("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ"),
   );
   return pda;
 }
@@ -1068,11 +1301,14 @@ function decodeFees(data: Buffer, offset: number): PumpSwapFeeBasisPoints {
   return pumpSwapFeeBasisPoints(
     data.readBigUInt64LE(offset),
     data.readBigUInt64LE(offset + 8),
-    data.readBigUInt64LE(offset + 16)
+    data.readBigUInt64LE(offset + 16),
   );
 }
 
-function decodeFeeTiers(data: Buffer, offset: number): { tiers: PumpSwapFeeTier[]; offset: number } {
+function decodeFeeTiers(
+  data: Buffer,
+  offset: number,
+): { tiers: PumpSwapFeeTier[]; offset: number } {
   const len = data.readUInt32LE(offset);
   offset += 4;
   const tiers: PumpSwapFeeTier[] = [];
@@ -1106,9 +1342,11 @@ export function decodeFeeConfig(data: Buffer): PumpSwapFeeConfig | null {
   }
 }
 
-export async function fetchFeeConfig(
-  connection: { getAccountInfo: (pubkey: PublicKey) => Promise<{ value?: { data: Buffer } | null }> }
-): Promise<PumpSwapFeeConfig | null> {
+export async function fetchFeeConfig(connection: {
+  getAccountInfo: (
+    pubkey: PublicKey,
+  ) => Promise<{ value?: { data: Buffer } | null }>;
+}): Promise<PumpSwapFeeConfig | null> {
   const account = await connection.getAccountInfo(PUMPSWAP_FEE_CONFIG);
   const data = account?.value?.data;
   return data ? decodeFeeConfig(Buffer.from(data)) : null;
@@ -1116,7 +1354,7 @@ export async function fetchFeeConfig(
 
 export function calculateFeeTier(
   feeTiers: PumpSwapFeeTier[],
-  marketCapLamports: bigint
+  marketCapLamports: bigint,
 ): PumpSwapFeeBasisPoints | null {
   const first = feeTiers[0];
   if (!first) return null;
@@ -1135,13 +1373,16 @@ export function calculateFeeTier(
 export function poolMarketCapLamports(
   baseMintSupply: bigint,
   baseReserve: bigint,
-  quoteReserve: bigint
+  quoteReserve: bigint,
 ): bigint | null {
   if (baseReserve === BigInt(0)) return null;
   return (quoteReserve * baseMintSupply) / baseReserve;
 }
 
-export function isCanonicalPumpPool(baseMint: PublicKey, poolCreator: PublicKey): boolean {
+export function isCanonicalPumpPool(
+  baseMint: PublicKey,
+  poolCreator: PublicKey,
+): boolean {
   return getPumpPoolAuthorityPDA(baseMint).equals(poolCreator);
 }
 
@@ -1151,7 +1392,7 @@ export function computePumpSwapFeeBasisPoints(
   baseMint: PublicKey,
   baseMintSupply: bigint | null,
   baseReserve: bigint,
-  quoteReserve: bigint
+  quoteReserve: bigint,
 ): PumpSwapFeeBasisPoints {
   if (!feeConfig) {
     return legacyPumpSwapFeeBasisPoints(true);
@@ -1162,7 +1403,11 @@ export function computePumpSwapFeeBasisPoints(
   if (baseMintSupply === null) {
     return legacyPumpSwapFeeBasisPoints(true);
   }
-  const marketCap = poolMarketCapLamports(baseMintSupply, baseReserve, quoteReserve);
+  const marketCap = poolMarketCapLamports(
+    baseMintSupply,
+    baseReserve,
+    quoteReserve,
+  );
   if (marketCap === null) {
     return legacyPumpSwapFeeBasisPoints(true);
   }
@@ -1176,8 +1421,12 @@ export function computePumpSwapFeeBasisPoints(
  * 100% from Rust: src/instruction/utils/pumpswap.rs fetch_pool
  */
 export async function fetchPool(
-  connection: { getAccountInfo: (pubkey: PublicKey) => Promise<{ value?: { data: Buffer } }> },
-  poolAddress: PublicKey
+  connection: {
+    getAccountInfo: (
+      pubkey: PublicKey,
+    ) => Promise<{ value?: { data: Buffer } }>;
+  },
+  poolAddress: PublicKey,
 ): Promise<PumpSwapPool | null> {
   const account = await connection.getAccountInfo(poolAddress);
   if (!account?.value?.data) {
@@ -1193,16 +1442,22 @@ export async function fetchPool(
  */
 export async function getTokenBalances(
   connection: {
-    getTokenAccountBalance: (pubkey: PublicKey) => Promise<{ value?: { amount: string } }>
+    getTokenAccountBalance: (
+      pubkey: PublicKey,
+    ) => Promise<{ value?: { amount: string } }>;
   },
-  pool: PumpSwapPool
+  pool: PumpSwapPool,
 ): Promise<{ baseBalance: bigint; quoteBalance: bigint } | null> {
   try {
-    const baseBalanceResult = await connection.getTokenAccountBalance(pool.poolBaseTokenAccount);
-    const quoteBalanceResult = await connection.getTokenAccountBalance(pool.poolQuoteTokenAccount);
+    const baseBalanceResult = await connection.getTokenAccountBalance(
+      pool.poolBaseTokenAccount,
+    );
+    const quoteBalanceResult = await connection.getTokenAccountBalance(
+      pool.poolQuoteTokenAccount,
+    );
 
-    const baseBalance = BigInt(baseBalanceResult?.value?.amount ?? '0');
-    const quoteBalance = BigInt(quoteBalanceResult?.value?.amount ?? '0');
+    const baseBalance = BigInt(baseBalanceResult?.value?.amount ?? "0");
+    const quoteBalance = BigInt(quoteBalanceResult?.value?.amount ?? "0");
 
     return { baseBalance, quoteBalance };
   } catch {
@@ -1220,10 +1475,15 @@ export async function getTokenBalances(
  */
 export async function findByMint(
   connection: {
-    getAccountInfo: (pubkey: PublicKey) => Promise<{ value?: { data: Buffer } }>;
-    getProgramAccounts?: (programId: PublicKey, config?: unknown) => Promise<Array<{ pubkey: PublicKey; account: { data: Buffer } }>>;
+    getAccountInfo: (
+      pubkey: PublicKey,
+    ) => Promise<{ value?: { data: Buffer } }>;
+    getProgramAccounts?: (
+      programId: PublicKey,
+      config?: unknown,
+    ) => Promise<Array<{ pubkey: PublicKey; account: { data: Buffer } }>>;
   },
-  mint: PublicKey
+  mint: PublicKey,
 ): Promise<{ poolAddress: PublicKey; pool: PumpSwapPool } | null> {
   // 1. Try v2 PDA
   const poolV2 = getPoolV2PDA(mint);
@@ -1261,25 +1521,28 @@ export async function findByBaseMint(
     getProgramAccounts: (
       programId: PublicKey,
       config?: {
-        filters?: Array<{ dataSize?: number; memcmp?: { offset: number; bytes: string } }>;
+        filters?: Array<{
+          dataSize?: number;
+          memcmp?: { offset: number; bytes: string };
+        }>;
         encoding?: string;
-      }
+      },
     ) => Promise<Array<{ pubkey: PublicKey; account: { data: Buffer } }>>;
   },
-  baseMint: PublicKey
+  baseMint: PublicKey,
 ): Promise<{ poolAddress: PublicKey; pool: PumpSwapPool } | null> {
   // base_mint offset: 8(discriminator) + 1(bump) + 2(index) + 32(creator) = 43
   const memcmpOffset = 43;
 
   // Query both pool sizes in parallel (SPL Token and Token2022)
   const filters = [
-    { memcmp: { offset: memcmpOffset, bytes: baseMint.toBase58() } }
+    { memcmp: { offset: memcmpOffset, bytes: baseMint.toBase58() } },
   ];
 
   try {
     const results = await connection.getProgramAccounts(PUMPSWAP_PROGRAM, {
       filters,
-      encoding: 'base64'
+      encoding: "base64",
     });
 
     if (!results || results.length === 0) {
@@ -1318,24 +1581,27 @@ export async function findByQuoteMint(
     getProgramAccounts: (
       programId: PublicKey,
       config?: {
-        filters?: Array<{ dataSize?: number; memcmp?: { offset: number; bytes: string } }>;
+        filters?: Array<{
+          dataSize?: number;
+          memcmp?: { offset: number; bytes: string };
+        }>;
         encoding?: string;
-      }
+      },
     ) => Promise<Array<{ pubkey: PublicKey; account: { data: Buffer } }>>;
   },
-  quoteMint: PublicKey
+  quoteMint: PublicKey,
 ): Promise<{ poolAddress: PublicKey; pool: PumpSwapPool } | null> {
   // quote_mint offset: 8 + 1 + 2 + 32 + 32 = 75
   const memcmpOffset = 75;
 
   const filters = [
-    { memcmp: { offset: memcmpOffset, bytes: quoteMint.toBase58() } }
+    { memcmp: { offset: memcmpOffset, bytes: quoteMint.toBase58() } },
   ];
 
   try {
     const results = await connection.getProgramAccounts(PUMPSWAP_PROGRAM, {
       filters,
-      encoding: 'base64'
+      encoding: "base64",
     });
 
     if (!results || results.length === 0) {

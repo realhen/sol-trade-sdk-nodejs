@@ -7,12 +7,12 @@
  * - Bounds checking
  */
 
-import { PublicKey } from '@solana/web3.js';
-import BN from 'bn.js';
+import { PublicKey } from "@solana/web3.js";
+import BN from "bn.js";
 
 // ===== Security Constants =====
 
-const MAX_SAFE_BIGINT = BigInt('18446744073709551615'); // 2^64 - 1
+const MAX_SAFE_BIGINT = BigInt("18446744073709551615"); // 2^64 - 1
 const MAX_BASIS_POINTS = BigInt(10000);
 const I128_MIN_BIGINT = -(BigInt(1) << BigInt(127));
 const I128_MAX_BIGINT = (BigInt(1) << BigInt(127)) - BigInt(1);
@@ -26,13 +26,13 @@ const MAX_SLIPPAGE_BASIS_POINTS = BigInt(9999);
 export class CalculationError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = 'CalculationError';
+    this.name = "CalculationError";
   }
 }
 
 // ===== Validation Functions =====
 
-function validateAmount(amount: bigint, name: string = 'amount'): void {
+function validateAmount(amount: bigint, name: string = "amount"): void {
   if (amount < BigInt(0)) {
     throw new CalculationError(`${name} cannot be negative: ${amount}`);
   }
@@ -43,17 +43,23 @@ function validateAmount(amount: bigint, name: string = 'amount'): void {
 
 function validateBasisPoints(basisPoints: bigint): void {
   if (basisPoints < BigInt(0) || basisPoints > MAX_BASIS_POINTS) {
-    throw new CalculationError(`Basis points must be between 0 and 10000, got ${basisPoints}`);
+    throw new CalculationError(
+      `Basis points must be between 0 and 10000, got ${basisPoints}`,
+    );
   }
 }
 
-function checkOverflow(a: bigint, b: bigint, operation: 'multiply' | 'add'): void {
-  if (operation === 'multiply') {
+function checkOverflow(
+  a: bigint,
+  b: bigint,
+  operation: "multiply" | "add",
+): void {
+  if (operation === "multiply") {
     // Check if multiplication would overflow
     if (a !== BigInt(0) && b > MAX_SAFE_BIGINT / a) {
       throw new CalculationError(`Multiplication overflow: ${a} * ${b}`);
     }
-  } else if (operation === 'add') {
+  } else if (operation === "add") {
     // Check if addition would overflow
     if (a > MAX_SAFE_BIGINT - b) {
       throw new CalculationError(`Addition overflow: ${a} + ${b}`);
@@ -68,10 +74,10 @@ function checkOverflow(a: bigint, b: bigint, operation: 'multiply' | 'add'): voi
  * Includes overflow protection
  */
 export function computeFee(amount: bigint, feeBasisPoints: bigint): bigint {
-  validateAmount(amount, 'amount');
+  validateAmount(amount, "amount");
   validateBasisPoints(feeBasisPoints);
 
-  checkOverflow(amount, feeBasisPoints, 'multiply');
+  checkOverflow(amount, feeBasisPoints, "multiply");
   return ceilDiv(amount * feeBasisPoints, BigInt(10000));
 }
 
@@ -80,45 +86,54 @@ export function computeFee(amount: bigint, feeBasisPoints: bigint): bigint {
  */
 export function ceilDiv(a: bigint, b: bigint): bigint {
   if (b === BigInt(0)) {
-    throw new CalculationError('Division by zero');
+    throw new CalculationError("Division by zero");
   }
-  validateAmount(a, 'dividend');
-  validateAmount(b, 'divisor');
+  validateAmount(a, "dividend");
+  validateAmount(b, "divisor");
 
-  checkOverflow(a, b - BigInt(1), 'add');
+  checkOverflow(a, b - BigInt(1), "add");
   return (a + b - BigInt(1)) / b;
 }
 
 /**
  * Calculate buy amount with slippage protection
  * Includes overflow protection and validation
- * 
+ *
  * Note: Basis points are clamped to MAX_SLIPPAGE_BASIS_POINTS (9999 = 99.99%)
  * to prevent the amount from doubling when basisPoints = 10000.
  */
-export function calculateWithSlippageBuy(amount: bigint, basisPoints: bigint): bigint {
-  validateAmount(amount, 'amount');
-  
+export function calculateWithSlippageBuy(
+  amount: bigint,
+  basisPoints: bigint,
+): bigint {
+  validateAmount(amount, "amount");
+
   // Clamp basis points to max 9999 (99.99%) to prevent amount doubling at 100%
-  const bps = basisPoints > MAX_SLIPPAGE_BASIS_POINTS ? MAX_SLIPPAGE_BASIS_POINTS : basisPoints;
-  
-  checkOverflow(amount, bps, 'multiply');
+  const bps =
+    basisPoints > MAX_SLIPPAGE_BASIS_POINTS
+      ? MAX_SLIPPAGE_BASIS_POINTS
+      : basisPoints;
+
+  checkOverflow(amount, bps, "multiply");
   const slippageAmount = (amount * bps) / BigInt(10000);
 
-  checkOverflow(amount, slippageAmount, 'add');
+  checkOverflow(amount, slippageAmount, "add");
   return amount + slippageAmount;
 }
 
 /**
  * Calculate sell amount with slippage protection
  * Includes underflow protection
- * 
+ *
  * 100% from Rust: src/utils/calc/common.rs calculate_with_slippage_sell
- * 
+ *
  * Note: Returns 1n if amount <= basisPoints / 10000n to ensure minimum output.
  */
-export function calculateWithSlippageSell(amount: bigint, basisPoints: bigint): bigint {
-  validateAmount(amount, 'amount');
+export function calculateWithSlippageSell(
+  amount: bigint,
+  basisPoints: bigint,
+): bigint {
+  validateAmount(amount, "amount");
   validateBasisPoints(basisPoints);
 
   // Rust: if amount <= basis_points / 10000 { 1 } else { ... }
@@ -126,7 +141,7 @@ export function calculateWithSlippageSell(amount: bigint, basisPoints: bigint): 
     return BigInt(1);
   }
 
-  checkOverflow(amount, basisPoints, 'multiply');
+  checkOverflow(amount, basisPoints, "multiply");
   const slippageAmount = (amount * basisPoints) / BigInt(10000);
 
   return amount - slippageAmount;
@@ -135,12 +150,12 @@ export function calculateWithSlippageSell(amount: bigint, basisPoints: bigint): 
 // ===== PumpFun Constants =====
 // Values from Rust: src/instruction/utils/pumpfun.rs global_constants
 export const PUMPFUN_CONSTANTS = {
-  FEE_BASIS_POINTS: BigInt(95),    // Protocol fee (NOT 100!)
-  CREATOR_FEE: BigInt(30),          // Creator fee (NOT 50!)
-  INITIAL_VIRTUAL_TOKEN_RESERVES: BigInt('1073000000000000'),
-  INITIAL_VIRTUAL_SOL_RESERVES: BigInt('30000000000'),
-  INITIAL_REAL_TOKEN_RESERVES: BigInt('793100000000000'), // Fixed: was 793000000000000
-  TOKEN_TOTAL_SUPPLY: BigInt('1000000000000000'),
+  FEE_BASIS_POINTS: BigInt(95), // Protocol fee (NOT 100!)
+  CREATOR_FEE: BigInt(30), // Creator fee (NOT 50!)
+  INITIAL_VIRTUAL_TOKEN_RESERVES: BigInt("1073000000000000"),
+  INITIAL_VIRTUAL_SOL_RESERVES: BigInt("30000000000"),
+  INITIAL_REAL_TOKEN_RESERVES: BigInt("793100000000000"), // Fixed: was 793000000000000
+  TOKEN_TOTAL_SUPPLY: BigInt("1000000000000000"),
 };
 
 /**
@@ -151,7 +166,7 @@ export function getBuyTokenAmountFromSolAmount(
   virtualSolReserves: bigint,
   realTokenReserves: bigint,
   hasCreator: boolean,
-  amount: bigint
+  amount: bigint,
 ): bigint {
   if (amount === BigInt(0) || virtualTokenReserves === BigInt(0)) {
     return BigInt(0);
@@ -166,8 +181,7 @@ export function getBuyTokenAmountFromSolAmount(
     (amount * BigInt(10000)) / (totalFeeBasisPoints + BigInt(10000));
   const denominator = virtualSolReserves + inputAmount;
 
-  let tokensReceived =
-    (inputAmount * virtualTokenReserves) / denominator;
+  let tokensReceived = (inputAmount * virtualTokenReserves) / denominator;
 
   if (tokensReceived > realTokenReserves) {
     tokensReceived = realTokenReserves;
@@ -177,9 +191,9 @@ export function getBuyTokenAmountFromSolAmount(
   if (tokensReceived <= BigInt(100) * BigInt(1000000)) {
     if (amount > BigInt(10000000)) {
       // > 0.01 SOL
-      tokensReceived = BigInt('25547619000000000');
+      tokensReceived = BigInt("25547619000000000");
     } else {
-      tokensReceived = BigInt('255476000000000');
+      tokensReceived = BigInt("255476000000000");
     }
   }
 
@@ -193,7 +207,7 @@ export function getSellSolAmountFromTokenAmount(
   virtualTokenReserves: bigint,
   virtualSolReserves: bigint,
   hasCreator: boolean,
-  amount: bigint
+  amount: bigint,
 ): bigint {
   if (amount === BigInt(0) || virtualTokenReserves === BigInt(0)) {
     return BigInt(0);
@@ -220,8 +234,8 @@ export function getSellSolAmountFromTokenAmount(
 // ===== PumpSwap Constants =====
 // Values from Rust: src/instruction/utils/pumpswap.rs accounts
 export const PUMPSWAP_CONSTANTS = {
-  LP_FEE_BASIS_POINTS: BigInt(25),          // 0.25% (was 20)
-  PROTOCOL_FEE_BASIS_POINTS: BigInt(5),     // 0.05% (was 20)
+  LP_FEE_BASIS_POINTS: BigInt(25), // 0.25% (was 20)
+  PROTOCOL_FEE_BASIS_POINTS: BigInt(5), // 0.05% (was 20)
   COIN_CREATOR_FEE_BASIS_POINTS: BigInt(5), // 0.05% (was 10)
 };
 
@@ -234,16 +248,24 @@ export interface PumpSwapFeeBasisPoints {
 export function pumpSwapFeeBasisPoints(
   lpFeeBasisPoints: bigint,
   protocolFeeBasisPoints: bigint,
-  coinCreatorFeeBasisPoints: bigint
+  coinCreatorFeeBasisPoints: bigint,
 ): PumpSwapFeeBasisPoints {
-  return { lpFeeBasisPoints, protocolFeeBasisPoints, coinCreatorFeeBasisPoints };
+  return {
+    lpFeeBasisPoints,
+    protocolFeeBasisPoints,
+    coinCreatorFeeBasisPoints,
+  };
 }
 
-export function legacyPumpSwapFeeBasisPoints(hasCoinCreator: boolean): PumpSwapFeeBasisPoints {
+export function legacyPumpSwapFeeBasisPoints(
+  hasCoinCreator: boolean,
+): PumpSwapFeeBasisPoints {
   return pumpSwapFeeBasisPoints(
     PUMPSWAP_CONSTANTS.LP_FEE_BASIS_POINTS,
     PUMPSWAP_CONSTANTS.PROTOCOL_FEE_BASIS_POINTS,
-    hasCoinCreator ? PUMPSWAP_CONSTANTS.COIN_CREATOR_FEE_BASIS_POINTS : BigInt(0)
+    hasCoinCreator
+      ? PUMPSWAP_CONSTANTS.COIN_CREATOR_FEE_BASIS_POINTS
+      : BigInt(0),
   );
 }
 
@@ -274,20 +296,25 @@ export interface SellQuoteInputResult {
 /** Compute the signed PumpSwap quote reserve used for pricing. */
 export function effectiveQuoteReserves(
   quoteVaultBalance: bigint,
-  virtualQuoteReserves: bigint
+  virtualQuoteReserves: bigint,
 ): bigint {
   if (quoteVaultBalance < BigInt(0) || quoteVaultBalance > MAX_SAFE_BIGINT) {
-    throw new CalculationError(`Invalid u64 quote vault balance: ${quoteVaultBalance}`);
-  }
-  if (virtualQuoteReserves < I128_MIN_BIGINT || virtualQuoteReserves > I128_MAX_BIGINT) {
     throw new CalculationError(
-      `Invalid signed i128 virtual quote reserves: ${virtualQuoteReserves}`
+      `Invalid u64 quote vault balance: ${quoteVaultBalance}`,
+    );
+  }
+  if (
+    virtualQuoteReserves < I128_MIN_BIGINT ||
+    virtualQuoteReserves > I128_MAX_BIGINT
+  ) {
+    throw new CalculationError(
+      `Invalid signed i128 virtual quote reserves: ${virtualQuoteReserves}`,
     );
   }
   const effective = quoteVaultBalance + virtualQuoteReserves;
   if (effective <= BigInt(0) || effective > MAX_SAFE_BIGINT) {
     throw new CalculationError(
-      `Invalid effective quote reserves: raw=${quoteVaultBalance}, virtual=${virtualQuoteReserves}`
+      `Invalid effective quote reserves: raw=${quoteVaultBalance}, virtual=${virtualQuoteReserves}`,
     );
   }
   return effective;
@@ -313,7 +340,7 @@ export function buyBaseInputInternal(
   baseReserve: bigint,
   quoteReserve: bigint,
   virtualQuoteReserves: bigint,
-  hasCoinCreator: boolean
+  hasCoinCreator: boolean,
 ): BuyBaseInputResult {
   return buyBaseInputInternalWithFees(
     base,
@@ -321,7 +348,7 @@ export function buyBaseInputInternal(
     baseReserve,
     quoteReserve,
     virtualQuoteReserves,
-    legacyPumpSwapFeeBasisPoints(hasCoinCreator)
+    legacyPumpSwapFeeBasisPoints(hasCoinCreator),
   );
 }
 
@@ -331,28 +358,41 @@ export function buyBaseInputInternalWithFees(
   baseReserve: bigint,
   quoteReserve: bigint,
   virtualQuoteReserves: bigint,
-  feeBasisPoints: PumpSwapFeeBasisPoints
+  feeBasisPoints: PumpSwapFeeBasisPoints,
 ): BuyBaseInputResult {
   if (baseReserve === BigInt(0) || quoteReserve === BigInt(0)) {
-    throw new Error('Invalid input: reserves cannot be zero');
+    throw new Error("Invalid input: reserves cannot be zero");
   }
-  const effectiveQuoteReserve = effectiveQuoteReserves(quoteReserve, virtualQuoteReserves);
+  const effectiveQuoteReserve = effectiveQuoteReserves(
+    quoteReserve,
+    virtualQuoteReserves,
+  );
   if (base > baseReserve) {
-    throw new Error('Cannot buy more base tokens than pool reserves');
+    throw new Error("Cannot buy more base tokens than pool reserves");
   }
 
   const numerator = effectiveQuoteReserve * base;
   const denominator = baseReserve - base;
 
   if (denominator === BigInt(0)) {
-    throw new Error('Pool would be depleted');
+    throw new Error("Pool would be depleted");
   }
 
-  const quoteAmountIn = pumpSwapCeilDiv(numerator, denominator, 'raw quote amount');
+  const quoteAmountIn = pumpSwapCeilDiv(
+    numerator,
+    denominator,
+    "raw quote amount",
+  );
 
   const lpFee = computeFee(quoteAmountIn, feeBasisPoints.lpFeeBasisPoints);
-  const protocolFee = computeFee(quoteAmountIn, feeBasisPoints.protocolFeeBasisPoints);
-  const coinCreatorFee = computeFee(quoteAmountIn, feeBasisPoints.coinCreatorFeeBasisPoints);
+  const protocolFee = computeFee(
+    quoteAmountIn,
+    feeBasisPoints.protocolFeeBasisPoints,
+  );
+  const coinCreatorFee = computeFee(
+    quoteAmountIn,
+    feeBasisPoints.coinCreatorFeeBasisPoints,
+  );
 
   const totalQuote = quoteAmountIn + lpFee + protocolFee + coinCreatorFee;
   const maxQuote = calculateWithSlippageBuy(totalQuote, slippageBasisPoints);
@@ -373,7 +413,7 @@ export function buyQuoteInputInternal(
   baseReserve: bigint,
   quoteReserve: bigint,
   virtualQuoteReserves: bigint,
-  hasCoinCreator: boolean
+  hasCoinCreator: boolean,
 ): BuyQuoteInputResult {
   return buyQuoteInputInternalWithFees(
     quote,
@@ -381,7 +421,7 @@ export function buyQuoteInputInternal(
     baseReserve,
     quoteReserve,
     virtualQuoteReserves,
-    legacyPumpSwapFeeBasisPoints(hasCoinCreator)
+    legacyPumpSwapFeeBasisPoints(hasCoinCreator),
   );
 }
 
@@ -391,12 +431,15 @@ export function buyQuoteInputInternalWithFees(
   baseReserve: bigint,
   quoteReserve: bigint,
   virtualQuoteReserves: bigint,
-  feeBasisPoints: PumpSwapFeeBasisPoints
+  feeBasisPoints: PumpSwapFeeBasisPoints,
 ): BuyQuoteInputResult {
   if (baseReserve === BigInt(0) || quoteReserve === BigInt(0)) {
-    throw new Error('Invalid input: reserves cannot be zero');
+    throw new Error("Invalid input: reserves cannot be zero");
   }
-  const effectiveQuoteReserve = effectiveQuoteReserves(quoteReserve, virtualQuoteReserves);
+  const effectiveQuoteReserve = effectiveQuoteReserves(
+    quoteReserve,
+    virtualQuoteReserves,
+  );
 
   const totalFeeBps =
     feeBasisPoints.lpFeeBasisPoints +
@@ -406,8 +449,14 @@ export function buyQuoteInputInternalWithFees(
 
   let effectiveQuote = (quote * BigInt(10000)) / denominator;
   const lpFee = computeFee(effectiveQuote, feeBasisPoints.lpFeeBasisPoints);
-  const protocolFee = computeFee(effectiveQuote, feeBasisPoints.protocolFeeBasisPoints);
-  const coinCreatorFee = computeFee(effectiveQuote, feeBasisPoints.coinCreatorFeeBasisPoints);
+  const protocolFee = computeFee(
+    effectiveQuote,
+    feeBasisPoints.protocolFeeBasisPoints,
+  );
+  const coinCreatorFee = computeFee(
+    effectiveQuote,
+    feeBasisPoints.coinCreatorFeeBasisPoints,
+  );
   const totalWithFees = effectiveQuote + lpFee + protocolFee + coinCreatorFee;
   if (totalWithFees > quote) {
     effectiveQuote -= totalWithFees - quote;
@@ -415,13 +464,14 @@ export function buyQuoteInputInternalWithFees(
       effectiveQuote = BigInt(0);
     }
   }
-  const inputAmount = effectiveQuote > BigInt(0) ? effectiveQuote - BigInt(1) : BigInt(0);
+  const inputAmount =
+    effectiveQuote > BigInt(0) ? effectiveQuote - BigInt(1) : BigInt(0);
 
   const numerator = baseReserve * inputAmount;
   const denominatorEffective = effectiveQuoteReserve + inputAmount;
 
   if (denominatorEffective === BigInt(0)) {
-    throw new Error('Pool would be depleted');
+    throw new Error("Pool would be depleted");
   }
 
   const baseAmountOut = numerator / denominatorEffective;
@@ -443,7 +493,7 @@ export function sellBaseInputInternal(
   baseReserve: bigint,
   quoteReserve: bigint,
   virtualQuoteReserves: bigint,
-  hasCoinCreator: boolean
+  hasCoinCreator: boolean,
 ): SellBaseInputResult {
   return sellBaseInputInternalWithFees(
     base,
@@ -451,7 +501,7 @@ export function sellBaseInputInternal(
     baseReserve,
     quoteReserve,
     virtualQuoteReserves,
-    legacyPumpSwapFeeBasisPoints(hasCoinCreator)
+    legacyPumpSwapFeeBasisPoints(hasCoinCreator),
   );
 }
 
@@ -461,27 +511,37 @@ export function sellBaseInputInternalWithFees(
   baseReserve: bigint,
   quoteReserve: bigint,
   virtualQuoteReserves: bigint,
-  feeBasisPoints: PumpSwapFeeBasisPoints
+  feeBasisPoints: PumpSwapFeeBasisPoints,
 ): SellBaseInputResult {
   if (baseReserve === BigInt(0) || quoteReserve === BigInt(0)) {
-    throw new Error('Invalid input: reserves cannot be zero');
+    throw new Error("Invalid input: reserves cannot be zero");
   }
-  const effectiveQuoteReserve = effectiveQuoteReserves(quoteReserve, virtualQuoteReserves);
+  const effectiveQuoteReserve = effectiveQuoteReserves(
+    quoteReserve,
+    virtualQuoteReserves,
+  );
 
-  const quoteAmountOut =
-    (effectiveQuoteReserve * base) / (baseReserve + base);
+  const quoteAmountOut = (effectiveQuoteReserve * base) / (baseReserve + base);
 
   const lpFee = computeFee(quoteAmountOut, feeBasisPoints.lpFeeBasisPoints);
-  const protocolFee = computeFee(quoteAmountOut, feeBasisPoints.protocolFeeBasisPoints);
-  const coinCreatorFee = computeFee(quoteAmountOut, feeBasisPoints.coinCreatorFeeBasisPoints);
+  const protocolFee = computeFee(
+    quoteAmountOut,
+    feeBasisPoints.protocolFeeBasisPoints,
+  );
+  const coinCreatorFee = computeFee(
+    quoteAmountOut,
+    feeBasisPoints.coinCreatorFeeBasisPoints,
+  );
 
   const totalFees = lpFee + protocolFee + coinCreatorFee;
   if (totalFees > quoteAmountOut) {
-    throw new Error('Fees exceed output');
+    throw new Error("Fees exceed output");
   }
   const quoteVaultOutflow = quoteAmountOut - lpFee;
   if (quoteVaultOutflow > quoteReserve) {
-    throw new Error('Insufficient real quote reserves to cover the sell output');
+    throw new Error(
+      "Insufficient real quote reserves to cover the sell output",
+    );
   }
   const finalQuote = quoteAmountOut - totalFees;
   const minQuote = calculateWithSlippageSell(finalQuote, slippageBasisPoints);
@@ -502,7 +562,7 @@ export function sellQuoteInputInternal(
   baseReserve: bigint,
   quoteReserve: bigint,
   virtualQuoteReserves: bigint,
-  hasCoinCreator: boolean
+  hasCoinCreator: boolean,
 ): SellQuoteInputResult {
   return sellQuoteInputInternalWithFees(
     quote,
@@ -510,7 +570,7 @@ export function sellQuoteInputInternal(
     baseReserve,
     quoteReserve,
     virtualQuoteReserves,
-    legacyPumpSwapFeeBasisPoints(hasCoinCreator)
+    legacyPumpSwapFeeBasisPoints(hasCoinCreator),
   );
 }
 
@@ -520,38 +580,42 @@ export function sellQuoteInputInternalWithFees(
   baseReserve: bigint,
   quoteReserve: bigint,
   virtualQuoteReserves: bigint,
-  feeBasisPoints: PumpSwapFeeBasisPoints
+  feeBasisPoints: PumpSwapFeeBasisPoints,
 ): SellQuoteInputResult {
   if (baseReserve === BigInt(0) || quoteReserve === BigInt(0)) {
-    throw new Error('Invalid input: reserves cannot be zero');
+    throw new Error("Invalid input: reserves cannot be zero");
   }
   if (quote > quoteReserve) {
-    throw new Error('Cannot receive more than pool reserves');
+    throw new Error("Cannot receive more than pool reserves");
   }
-  const effectiveQuoteReserve = effectiveQuoteReserves(quoteReserve, virtualQuoteReserves);
+  const effectiveQuoteReserve = effectiveQuoteReserves(
+    quoteReserve,
+    virtualQuoteReserves,
+  );
 
   const rawQuote = calculateQuoteAmountOut(
     quote,
     feeBasisPoints.lpFeeBasisPoints,
     feeBasisPoints.protocolFeeBasisPoints,
-    feeBasisPoints.coinCreatorFeeBasisPoints
+    feeBasisPoints.coinCreatorFeeBasisPoints,
   );
-
 
   const lpFee = computeFee(rawQuote, feeBasisPoints.lpFeeBasisPoints);
   const quoteVaultOutflow = rawQuote - lpFee;
   if (quoteVaultOutflow > quoteReserve) {
-    throw new Error('Insufficient real quote reserves to cover the sell output');
+    throw new Error(
+      "Insufficient real quote reserves to cover the sell output",
+    );
   }
 
   if (rawQuote >= effectiveQuoteReserve) {
-    throw new Error('Invalid input: desired amount exceeds reserve');
+    throw new Error("Invalid input: desired amount exceeds reserve");
   }
 
   const baseAmountIn = pumpSwapCeilDiv(
     baseReserve * rawQuote,
     effectiveQuoteReserve - rawQuote,
-    'base amount'
+    "base amount",
   );
   const minQuote = calculateWithSlippageSell(quote, slippageBasisPoints);
 
@@ -566,29 +630,29 @@ function calculateQuoteAmountOut(
   userQuoteAmountOut: bigint,
   lpFeeBasisPoints: bigint,
   protocolFeeBasisPoints: bigint,
-  coinCreatorFeeBasisPoints: bigint
+  coinCreatorFeeBasisPoints: bigint,
 ): bigint {
   const totalFeeBasisPoints =
     lpFeeBasisPoints + protocolFeeBasisPoints + coinCreatorFeeBasisPoints;
   const denominator = BigInt(10000) - totalFeeBasisPoints;
   if (denominator <= BigInt(0)) {
-    throw new Error('Total fee basis points must be less than 10,000');
+    throw new Error("Total fee basis points must be less than 10,000");
   }
   return pumpSwapCeilDiv(
     userQuoteAmountOut * BigInt(10000),
     denominator,
-    'quote amount'
+    "quote amount",
   );
 }
 
 // ===== Bonk Constants =====
 
 export const BONK_CONSTANTS = {
-  PROTOCOL_FEE_RATE: BigInt(25),   // 0.25%
-  PLATFORM_FEE_RATE: BigInt(100),  // 1%
-  SHARE_FEE_RATE: BigInt(0),       // 0%
-  DEFAULT_VIRTUAL_BASE: BigInt('1073025605596382'),
-  DEFAULT_VIRTUAL_QUOTE: BigInt('30000852951'),
+  PROTOCOL_FEE_RATE: BigInt(25), // 0.25%
+  PLATFORM_FEE_RATE: BigInt(100), // 1%
+  SHARE_FEE_RATE: BigInt(0), // 0%
+  DEFAULT_VIRTUAL_BASE: BigInt("1073025605596382"),
+  DEFAULT_VIRTUAL_QUOTE: BigInt("30000852951"),
 };
 
 /**
@@ -597,7 +661,7 @@ export const BONK_CONSTANTS = {
 export function getBonkAmountOut(
   amountIn: bigint,
   virtualBase: bigint,
-  virtualQuote: bigint
+  virtualQuote: bigint,
 ): bigint {
   if (virtualBase === BigInt(0) || virtualQuote === BigInt(0)) {
     return BigInt(0);
@@ -613,7 +677,7 @@ export function getBonkAmountOut(
 export function getBonkAmountIn(
   amountOut: bigint,
   virtualBase: bigint,
-  virtualQuote: bigint
+  virtualQuote: bigint,
 ): bigint {
   if (virtualBase === BigInt(0) || virtualQuote === BigInt(0)) {
     return BigInt(0);
@@ -624,7 +688,8 @@ export function getBonkAmountIn(
     BONK_CONSTANTS.PLATFORM_FEE_RATE +
     BONK_CONSTANTS.SHARE_FEE_RATE;
   const amountIn =
-    ((amountOut * BigInt(10000)) / (BigInt(10000) - totalFeeRate) * virtualBase) /
+    (((amountOut * BigInt(10000)) / (BigInt(10000) - totalFeeRate)) *
+      virtualBase) /
     virtualQuote;
 
   return amountIn;
@@ -638,7 +703,7 @@ export function getBonkAmountIn(
 export function raydiumAmmV4GetAmountOut(
   amountIn: bigint,
   inputReserve: bigint,
-  outputReserve: bigint
+  outputReserve: bigint,
 ): bigint {
   if (inputReserve === BigInt(0) || outputReserve === BigInt(0)) {
     return BigInt(0);
@@ -658,9 +723,13 @@ export function raydiumAmmV4GetAmountOut(
 export function raydiumAmmV4GetAmountIn(
   amountOut: bigint,
   inputReserve: bigint,
-  outputReserve: bigint
+  outputReserve: bigint,
 ): bigint {
-  if (inputReserve === BigInt(0) || outputReserve === BigInt(0) || amountOut >= outputReserve) {
+  if (
+    inputReserve === BigInt(0) ||
+    outputReserve === BigInt(0) ||
+    amountOut >= outputReserve
+  ) {
     return BigInt(0);
   }
 
@@ -676,7 +745,7 @@ export function raydiumAmmV4GetAmountIn(
 export function raydiumCpmmGetAmountOut(
   amountIn: bigint,
   inputReserve: bigint,
-  outputReserve: bigint
+  outputReserve: bigint,
 ): bigint {
   if (inputReserve === BigInt(0) || outputReserve === BigInt(0)) {
     return BigInt(0);
@@ -701,7 +770,7 @@ export function meteoraDammV2ComputeSwapAmount(
   tokenBReserve: bigint,
   isAToB: boolean,
   amountIn: bigint,
-  slippageBasisPoints: bigint
+  slippageBasisPoints: bigint,
 ): MeteoraSwapResult {
   if (amountIn === BigInt(0)) {
     return { amountOut: BigInt(0), minAmountOut: BigInt(0) };
@@ -742,7 +811,10 @@ export function meteoraDammV2ComputeSwapAmount(
   }
 
   // Apply slippage
-  const minAmountOut = calculateWithSlippageSell(amountOut, slippageBasisPoints);
+  const minAmountOut = calculateWithSlippageSell(
+    amountOut,
+    slippageBasisPoints,
+  );
 
   return { amountOut, minAmountOut };
 }
@@ -752,7 +824,7 @@ export function meteoraDammV2ComputeSwapAmount(
  */
 export function meteoraDammV2CalculatePrice(
   tokenAReserve: bigint,
-  tokenBReserve: bigint
+  tokenBReserve: bigint,
 ): number {
   if (tokenAReserve === BigInt(0)) {
     return 0.0;
@@ -765,12 +837,14 @@ export function meteoraDammV2CalculatePrice(
  */
 export function meteoraDammV2CalculateLiquidity(
   tokenAReserve: bigint,
-  tokenBReserve: bigint
+  tokenBReserve: bigint,
 ): bigint {
   if (tokenAReserve === BigInt(0) || tokenBReserve === BigInt(0)) {
     return BigInt(0);
   }
-  return BigInt(Math.floor(Math.sqrt(Number(tokenAReserve) * Number(tokenBReserve))));
+  return BigInt(
+    Math.floor(Math.sqrt(Number(tokenAReserve) * Number(tokenBReserve))),
+  );
 }
 
 /**
@@ -780,14 +854,19 @@ export function meteoraDammV2GetAmountOut(
   amountIn: bigint,
   inputReserve: bigint,
   outputReserve: bigint,
-  feeBasisPoints: bigint
+  feeBasisPoints: bigint,
 ): bigint {
-  if (inputReserve === BigInt(0) || outputReserve === BigInt(0) || amountIn === BigInt(0)) {
+  if (
+    inputReserve === BigInt(0) ||
+    outputReserve === BigInt(0) ||
+    amountIn === BigInt(0)
+  ) {
     return BigInt(0);
   }
 
   // Apply fee
-  const amountInAfterFee = (amountIn * (BigInt(10000) - feeBasisPoints)) / BigInt(10000);
+  const amountInAfterFee =
+    (amountIn * (BigInt(10000) - feeBasisPoints)) / BigInt(10000);
 
   const numerator = amountInAfterFee * outputReserve;
   const denominator = inputReserve + amountInAfterFee;
@@ -802,14 +881,19 @@ export function meteoraDammV2GetAmountIn(
   amountOut: bigint,
   inputReserve: bigint,
   outputReserve: bigint,
-  feeBasisPoints: bigint
+  feeBasisPoints: bigint,
 ): bigint {
-  if (inputReserve === BigInt(0) || outputReserve === BigInt(0) || amountOut >= outputReserve) {
+  if (
+    inputReserve === BigInt(0) ||
+    outputReserve === BigInt(0) ||
+    amountOut >= outputReserve
+  ) {
     return BigInt(0);
   }
 
   const numerator = inputReserve * amountOut * BigInt(10000);
-  const denominator = (outputReserve - amountOut) * (BigInt(10000) - feeBasisPoints);
+  const denominator =
+    (outputReserve - amountOut) * (BigInt(10000) - feeBasisPoints);
 
   return ceilDiv(numerator, denominator);
 }
@@ -819,7 +903,10 @@ export function meteoraDammV2GetAmountIn(
 /**
  * Calculate price impact percentage
  */
-export function calculatePriceImpact(reserveIn: bigint, amountIn: bigint): number {
+export function calculatePriceImpact(
+  reserveIn: bigint,
+  amountIn: bigint,
+): number {
   if (reserveIn === BigInt(0)) {
     return 0;
   }
@@ -833,7 +920,7 @@ export function calculatePrice(
   quoteReserve: bigint,
   baseReserve: bigint,
   quoteDecimals: number,
-  baseDecimals: number
+  baseDecimals: number,
 ): number {
   if (baseReserve === BigInt(0)) {
     return 0;
@@ -863,7 +950,7 @@ export function priceTokenInWsol(
   virtualBase: bigint,
   virtualQuote: bigint,
   realBase: bigint,
-  realQuote: bigint
+  realQuote: bigint,
 ): number {
   return priceBaseInQuoteWithVirtual(
     virtualBase,
@@ -871,7 +958,7 @@ export function priceTokenInWsol(
     realBase,
     realQuote,
     DEFAULT_TOKEN_DECIMALS,
-    SOL_DECIMALS
+    SOL_DECIMALS,
   );
 }
 
@@ -885,29 +972,31 @@ export function priceBaseInQuoteWithVirtual(
   realBase: bigint,
   realQuote: bigint,
   baseDecimals: number,
-  quoteDecimals: number
+  quoteDecimals: number,
 ): number {
   // Calculate decimal places difference
   const decimalDiff = quoteDecimals - baseDecimals;
-  const decimalFactor = decimalDiff >= 0 
-    ? Math.pow(10, decimalDiff) 
-    : 1.0 / Math.pow(10, -decimalDiff);
-  
+  const decimalFactor =
+    decimalDiff >= 0
+      ? Math.pow(10, decimalDiff)
+      : 1.0 / Math.pow(10, -decimalDiff);
+
   // Calculate reserves state before price calculation
   const quoteReserves = virtualQuote + realQuote;
-  const baseReserves = virtualBase > realBase ? virtualBase - realBase : BigInt(0);
-  
+  const baseReserves =
+    virtualBase > realBase ? virtualBase - realBase : BigInt(0);
+
   if (baseReserves === BigInt(0)) {
     return 0.0;
   }
-  
+
   if (decimalFactor === 0.0) {
     return 0.0;
   }
-  
+
   // Use floating point calculation to avoid precision loss
-  const price = (Number(quoteReserves) / Number(baseReserves)) / decimalFactor;
-  
+  const price = Number(quoteReserves) / Number(baseReserves) / decimalFactor;
+
   return price;
 }
 
@@ -919,7 +1008,7 @@ export function priceBaseInQuoteFromReserves(
   baseReserve: bigint,
   quoteReserve: bigint,
   baseDecimals: number,
-  quoteDecimals: number
+  quoteDecimals: number,
 ): number {
   const base = Number(baseReserve) / Math.pow(10, baseDecimals);
   const quote = Number(quoteReserve) / Math.pow(10, quoteDecimals);
@@ -937,7 +1026,7 @@ export function priceQuoteInBase(
   baseReserve: bigint,
   quoteReserve: bigint,
   baseDecimals: number,
-  quoteDecimals: number
+  quoteDecimals: number,
 ): number {
   const base = Number(baseReserve) / Math.pow(10, baseDecimals);
   const quote = Number(quoteReserve) / Math.pow(10, quoteDecimals);
@@ -959,7 +1048,7 @@ const SCALE = 1_000_000; // 6 decimals for tokens
  */
 export function priceTokenInSol(
   virtualSolReserves: bigint,
-  virtualTokenReserves: bigint
+  virtualTokenReserves: bigint,
 ): number {
   const vSol = Number(virtualSolReserves) / LAMPORTS_PER_SOL;
   const vTokens = Number(virtualTokenReserves) / SCALE;
@@ -981,35 +1070,35 @@ export function getBonkBuyTokenAmountFromSolAmount(
   virtualQuote: bigint,
   realBase: bigint,
   realQuote: bigint,
-  slippageBasisPoints: bigint
+  slippageBasisPoints: bigint,
 ): bigint {
   const amountInU128 = amountIn;
-  
+
   // Fee rates from Bonk - 100% from Rust: src/instruction/utils/bonk.rs accounts
-  const PROTOCOL_FEE_RATE = BigInt(25);   // 0.25%
-  const PLATFORM_FEE_RATE = BigInt(100);  // 1%
-  const SHARE_FEE_RATE = BigInt(0);       // 0%
-  
+  const PROTOCOL_FEE_RATE = BigInt(25); // 0.25%
+  const PLATFORM_FEE_RATE = BigInt(100); // 1%
+  const SHARE_FEE_RATE = BigInt(0); // 0%
+
   // Calculate fees
   const protocolFee = (amountInU128 * PROTOCOL_FEE_RATE) / BigInt(10000);
   const platformFee = (amountInU128 * PLATFORM_FEE_RATE) / BigInt(10000);
   const shareFee = (amountInU128 * SHARE_FEE_RATE) / BigInt(10000);
-  
+
   // Calculate net input after fees
   const amountInNet = amountInU128 - protocolFee - platformFee - shareFee;
-  
+
   // Calculate total reserves
   const inputReserve = virtualQuote + realQuote;
   const outputReserve = virtualBase - realBase;
-  
+
   // Apply constant product formula
   const numerator = amountInNet * outputReserve;
   const denominator = inputReserve + amountInNet;
   let amountOut = numerator / denominator;
-  
+
   // Apply slippage
   amountOut = amountOut - (amountOut * slippageBasisPoints) / BigInt(10000);
-  
+
   return amountOut;
 }
 
@@ -1023,35 +1112,36 @@ export function getBonkSellSolAmountFromTokenAmount(
   virtualQuote: bigint,
   realBase: bigint,
   realQuote: bigint,
-  slippageBasisPoints: bigint
+  slippageBasisPoints: bigint,
 ): bigint {
   const amountInU128 = amountIn;
-  
+
   // For sell, input_reserve is token reserves, output_reserve is SOL reserves
   const inputReserve = virtualBase - realBase;
   const outputReserve = virtualQuote + realQuote;
-  
+
   // Use constant product formula
   const numerator = amountInU128 * outputReserve;
   const denominator = inputReserve + amountInU128;
   const solAmountOut = numerator / denominator;
-  
+
   // Fee rates from Bonk - 100% from Rust: src/instruction/utils/bonk.rs accounts
-  const PROTOCOL_FEE_RATE = BigInt(25);   // 0.25%
-  const PLATFORM_FEE_RATE = BigInt(100);  // 1%
-  const SHARE_FEE_RATE = BigInt(0);       // 0%
-  
+  const PROTOCOL_FEE_RATE = BigInt(25); // 0.25%
+  const PLATFORM_FEE_RATE = BigInt(100); // 1%
+  const SHARE_FEE_RATE = BigInt(0); // 0%
+
   // Calculate fees
   const protocolFee = (solAmountOut * PROTOCOL_FEE_RATE) / BigInt(10000);
   const platformFee = (solAmountOut * PLATFORM_FEE_RATE) / BigInt(10000);
   const shareFee = (solAmountOut * SHARE_FEE_RATE) / BigInt(10000);
-  
+
   // Net SOL after fees
   const solAmountNet = solAmountOut - protocolFee - platformFee - shareFee;
-  
+
   // Apply slippage
-  const finalAmount = solAmountNet - (solAmountNet * slippageBasisPoints) / BigInt(10000);
-  
+  const finalAmount =
+    solAmountNet - (solAmountNet * slippageBasisPoints) / BigInt(10000);
+
   return finalAmount;
 }
 
@@ -1085,10 +1175,16 @@ const RAYDIUM_CPMM_FUND_FEE_RATE = BigInt(40000);
 
 function computeRaydiumCpmmTradingFee(amount: bigint, feeRate: bigint): bigint {
   const numerator = amount * feeRate;
-  return (numerator + RAYDIUM_CPMM_FEE_RATE_DENOMINATOR - BigInt(1)) / RAYDIUM_CPMM_FEE_RATE_DENOMINATOR;
+  return (
+    (numerator + RAYDIUM_CPMM_FEE_RATE_DENOMINATOR - BigInt(1)) /
+    RAYDIUM_CPMM_FEE_RATE_DENOMINATOR
+  );
 }
 
-function computeRaydiumCpmmProtocolFundFee(amount: bigint, feeRate: bigint): bigint {
+function computeRaydiumCpmmProtocolFundFee(
+  amount: bigint,
+  feeRate: bigint,
+): bigint {
   const numerator = amount * feeRate;
   return numerator / RAYDIUM_CPMM_FEE_RATE_DENOMINATOR;
 }
@@ -1102,28 +1198,40 @@ export function computeRaydiumCpmmSwapAmount(
   quoteReserve: bigint,
   isBaseIn: boolean,
   amountIn: bigint,
-  slippageBasisPoints: bigint
+  slippageBasisPoints: bigint,
 ): RaydiumCpmmComputeSwapParams {
-  const [inputReserve, outputReserve] = isBaseIn 
-    ? [baseReserve, quoteReserve] 
+  const [inputReserve, outputReserve] = isBaseIn
+    ? [baseReserve, quoteReserve]
     : [quoteReserve, baseReserve];
-  
+
   // Calculate swap
-  const tradeFee = computeRaydiumCpmmTradingFee(amountIn, RAYDIUM_CPMM_TRADE_FEE_RATE);
+  const tradeFee = computeRaydiumCpmmTradingFee(
+    amountIn,
+    RAYDIUM_CPMM_TRADE_FEE_RATE,
+  );
   const inputAmountLessFees = amountIn - tradeFee;
-  
-  const protocolFee = computeRaydiumCpmmProtocolFundFee(tradeFee, RAYDIUM_CPMM_PROTOCOL_FEE_RATE);
-  const fundFee = computeRaydiumCpmmProtocolFundFee(tradeFee, RAYDIUM_CPMM_FUND_FEE_RATE);
-  
+
+  const protocolFee = computeRaydiumCpmmProtocolFundFee(
+    tradeFee,
+    RAYDIUM_CPMM_PROTOCOL_FEE_RATE,
+  );
+  const fundFee = computeRaydiumCpmmProtocolFundFee(
+    tradeFee,
+    RAYDIUM_CPMM_FUND_FEE_RATE,
+  );
+
   // Calculate output
-  const outputAmountSwapped = (outputReserve * inputAmountLessFees) / (inputReserve + inputAmountLessFees);
+  const outputAmountSwapped =
+    (outputReserve * inputAmountLessFees) /
+    (inputReserve + inputAmountLessFees);
   const outputAmount = outputAmountSwapped; // Creator fee is 0
-  
+
   // Calculate min amount out with slippage
-  const minAmountOut = outputAmount - (outputAmount * slippageBasisPoints) / BigInt(10000);
-  
+  const minAmountOut =
+    outputAmount - (outputAmount * slippageBasisPoints) / BigInt(10000);
+
   const allTrade = true;
-  
+
   return {
     allTrade,
     amountIn,
@@ -1149,29 +1257,34 @@ export function computeRaydiumAmmV4SwapAmount(
   quoteReserve: bigint,
   isBaseIn: boolean,
   amountIn: bigint,
-  slippageBasisPoints: bigint
+  slippageBasisPoints: bigint,
 ): RaydiumCpmmComputeSwapParams {
-  const [inputReserve, outputReserve] = isBaseIn 
-    ? [baseReserve, quoteReserve] 
+  const [inputReserve, outputReserve] = isBaseIn
+    ? [baseReserve, quoteReserve]
     : [quoteReserve, baseReserve];
-  
+
   // Calculate trade fee
   const tradeFeeNumerator = amountIn * RAYDIUM_AMM_V4_TRADE_FEE_NUMERATOR;
-  const tradeFee = (tradeFeeNumerator + RAYDIUM_AMM_V4_TRADE_FEE_DENOMINATOR - BigInt(1)) / RAYDIUM_AMM_V4_TRADE_FEE_DENOMINATOR;
-  
+  const tradeFee =
+    (tradeFeeNumerator + RAYDIUM_AMM_V4_TRADE_FEE_DENOMINATOR - BigInt(1)) /
+    RAYDIUM_AMM_V4_TRADE_FEE_DENOMINATOR;
+
   const inputAmountLessFees = amountIn - tradeFee;
-  
+
   // Calculate swap fee
   const swapFeeNumerator = tradeFee * RAYDIUM_AMM_V4_SWAP_FEE_NUMERATOR;
   const swapFee = swapFeeNumerator / RAYDIUM_AMM_V4_SWAP_FEE_DENOMINATOR;
-  
+
   // Calculate output
-  const outputAmountSwapped = (outputReserve * inputAmountLessFees) / (inputReserve + inputAmountLessFees);
+  const outputAmountSwapped =
+    (outputReserve * inputAmountLessFees) /
+    (inputReserve + inputAmountLessFees);
   const outputAmount = outputAmountSwapped - swapFee;
-  
+
   // Calculate min amount out with slippage
-  const minAmountOut = outputAmount - (outputAmount * slippageBasisPoints) / BigInt(10000);
-  
+  const minAmountOut =
+    outputAmount - (outputAmount * slippageBasisPoints) / BigInt(10000);
+
   return {
     allTrade: true,
     amountIn,
@@ -1190,7 +1303,7 @@ export function computeRaydiumAmmV4SwapAmount(
 export function priceToken0InToken1(
   sqrtPriceX64: bigint,
   decimalsToken0: number,
-  decimalsToken1: number
+  decimalsToken1: number,
 ): number {
   const sqrtPrice = Number(sqrtPriceX64) / Math.pow(2, 64); // Q64.64 to float
   const priceRaw = sqrtPrice * sqrtPrice; // Price without decimal adjustment
@@ -1205,7 +1318,9 @@ export function priceToken0InToken1(
 export function priceToken1InToken0(
   sqrtPriceX64: bigint,
   decimalsToken0: number,
-  decimalsToken1: number
+  decimalsToken1: number,
 ): number {
-  return 1.0 / priceToken0InToken1(sqrtPriceX64, decimalsToken0, decimalsToken1);
+  return (
+    1.0 / priceToken0InToken1(sqrtPriceX64, decimalsToken0, decimalsToken1)
+  );
 }

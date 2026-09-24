@@ -1,3 +1,4 @@
+import { Buffer } from "buffer";
 /**
  * Raydium AMM V4 Protocol Instruction Builder
  *
@@ -25,16 +26,18 @@ import {
 // Program IDs and Constants
 // ============================================
 
-const SOL_TOKEN_ACCOUNT = new PublicKey("So11111111111111111111111111111111111111111");
+const SOL_TOKEN_ACCOUNT = new PublicKey(
+  "So11111111111111111111111111111111111111111",
+);
 
 /** Raydium AMM V4 program ID */
 export const RAYDIUM_AMM_V4_PROGRAM_ID = new PublicKey(
-  "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
+  "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
 );
 
 /** Authority */
 export const RAYDIUM_AMM_V4_AUTHORITY = new PublicKey(
-  "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1"
+  "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
 );
 
 /** Fee rates */
@@ -48,10 +51,14 @@ export const RAYDIUM_AMM_V4_SWAP_FEE_DENOMINATOR = BigInt(10000);
 // ============================================
 
 /** Swap base in instruction discriminator (single byte) */
-export const RAYDIUM_AMM_V4_SWAP_BASE_IN_DISCRIMINATOR: Buffer = Buffer.from([9]);
+export const RAYDIUM_AMM_V4_SWAP_BASE_IN_DISCRIMINATOR: Buffer = Buffer.from([
+  9,
+]);
 
 /** Swap base out instruction discriminator (single byte) */
-export const RAYDIUM_AMM_V4_SWAP_BASE_OUT_DISCRIMINATOR: Buffer = Buffer.from([11]);
+export const RAYDIUM_AMM_V4_SWAP_BASE_OUT_DISCRIMINATOR: Buffer = Buffer.from([
+  11,
+]);
 
 // ============================================
 // Seeds
@@ -71,10 +78,13 @@ export function computeRaydiumAmmV4SwapAmount(
   pcReserve: bigint,
   isCoinIn: boolean,
   amountIn: bigint,
-  slippageBasisPoints: bigint
+  slippageBasisPoints: bigint,
 ): { amountOut: bigint; minAmountOut: bigint } {
   // Apply trade fee (0.25%)
-  const amountInAfterFee = amountIn - (amountIn * RAYDIUM_AMM_V4_TRADE_FEE_NUMERATOR) / RAYDIUM_AMM_V4_TRADE_FEE_DENOMINATOR;
+  const amountInAfterFee =
+    amountIn -
+    (amountIn * RAYDIUM_AMM_V4_TRADE_FEE_NUMERATOR) /
+      RAYDIUM_AMM_V4_TRADE_FEE_DENOMINATOR;
 
   // Calculate output using constant product formula
   let amountOut: bigint;
@@ -89,7 +99,8 @@ export function computeRaydiumAmmV4SwapAmount(
   }
 
   // Apply slippage
-  const minAmountOut = amountOut - (amountOut * slippageBasisPoints) / BigInt(10000);
+  const minAmountOut =
+    amountOut - (amountOut * slippageBasisPoints) / BigInt(10000);
 
   return { amountOut, minAmountOut };
 }
@@ -158,31 +169,35 @@ function isMintMatch(requested: PublicKey, expected: PublicKey): boolean {
   );
 }
 
-function ensureExpectedMint(label: string, requested: PublicKey, expected: PublicKey): void {
+function ensureExpectedMint(
+  label: string,
+  requested: PublicKey,
+  expected: PublicKey,
+): void {
   if (!isDefaultPublicKey(requested) && !isMintMatch(requested, expected)) {
     throw new Error(
-      `${label} must match the Raydium AMM v4 pool side (${expected.toBase58()}), got ${requested.toBase58()}`
+      `${label} must match the Raydium AMM v4 pool side (${expected.toBase58()}), got ${requested.toBase58()}`,
     );
   }
 }
 
 function ensureMarketAccounts(params: RaydiumAmmV4Params): void {
   const required: Array<[string, PublicKey]> = [
-    ['ammOpenOrders', params.ammOpenOrders],
-    ['ammTargetOrders', params.ammTargetOrders],
-    ['serumProgram', params.serumProgram],
-    ['serumMarket', params.serumMarket],
-    ['serumBids', params.serumBids],
-    ['serumAsks', params.serumAsks],
-    ['serumEventQueue', params.serumEventQueue],
-    ['serumCoinVaultAccount', params.serumCoinVaultAccount],
-    ['serumPcVaultAccount', params.serumPcVaultAccount],
-    ['serumVaultSigner', params.serumVaultSigner],
+    ["ammOpenOrders", params.ammOpenOrders],
+    ["ammTargetOrders", params.ammTargetOrders],
+    ["serumProgram", params.serumProgram],
+    ["serumMarket", params.serumMarket],
+    ["serumBids", params.serumBids],
+    ["serumAsks", params.serumAsks],
+    ["serumEventQueue", params.serumEventQueue],
+    ["serumCoinVaultAccount", params.serumCoinVaultAccount],
+    ["serumPcVaultAccount", params.serumPcVaultAccount],
+    ["serumVaultSigner", params.serumVaultSigner],
   ];
   for (const [name, account] of required) {
     if (isDefaultPublicKey(account)) {
       throw new Error(
-        `Raydium AMM v4 requires ${name}; pass real market accounts from the AMM/market state`
+        `Raydium AMM v4 requires ${name}; pass real market accounts from the AMM/market state`,
       );
     }
   }
@@ -192,7 +207,7 @@ function ensureMarketAccounts(params: RaydiumAmmV4Params): void {
  * Build buy instructions for Raydium AMM V4 protocol
  */
 export function buildRaydiumAmmV4BuyInstructions(
-  params: BuildRaydiumAmmV4BuyInstructionsParams
+  params: BuildRaydiumAmmV4BuyInstructionsParams,
 ): TransactionInstruction[] {
   const {
     payer,
@@ -213,8 +228,12 @@ export function buildRaydiumAmmV4BuyInstructions(
   const payerPubkey = payer instanceof Keypair ? payer.publicKey : payer;
   const instructions: TransactionInstruction[] = [];
 
-  const WSOL_TOKEN_ACCOUNT = new PublicKey("So11111111111111111111111111111111111111112");
-  const USDC_TOKEN_ACCOUNT = new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
+  const WSOL_TOKEN_ACCOUNT = new PublicKey(
+    "So11111111111111111111111111111111111111112",
+  );
+  const USDC_TOKEN_ACCOUNT = new PublicKey(
+    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  );
 
   const {
     amm,
@@ -238,15 +257,18 @@ export function buildRaydiumAmmV4BuyInstructions(
   ensureMarketAccounts(protocolParams);
 
   // Check pool type
-  const isWsol = coinMint.equals(WSOL_TOKEN_ACCOUNT) || pcMint.equals(WSOL_TOKEN_ACCOUNT);
-  const isUsdc = coinMint.equals(USDC_TOKEN_ACCOUNT) || pcMint.equals(USDC_TOKEN_ACCOUNT);
+  const isWsol =
+    coinMint.equals(WSOL_TOKEN_ACCOUNT) || pcMint.equals(WSOL_TOKEN_ACCOUNT);
+  const isUsdc =
+    coinMint.equals(USDC_TOKEN_ACCOUNT) || pcMint.equals(USDC_TOKEN_ACCOUNT);
 
   if (!isWsol && !isUsdc) {
     throw new Error("Pool must contain WSOL or USDC");
   }
 
   // Determine swap direction
-  const isBaseIn = coinMint.equals(WSOL_TOKEN_ACCOUNT) || coinMint.equals(USDC_TOKEN_ACCOUNT);
+  const isBaseIn =
+    coinMint.equals(WSOL_TOKEN_ACCOUNT) || coinMint.equals(USDC_TOKEN_ACCOUNT);
 
   // Calculate output
   const swapResult = computeRaydiumAmmV4SwapAmount(
@@ -254,7 +276,7 @@ export function buildRaydiumAmmV4BuyInstructions(
     pcReserve,
     isBaseIn,
     inputAmount,
-    slippageBasisPoints
+    slippageBasisPoints,
   );
   const minimumAmountOut = fixedOutputAmount ?? swapResult.minAmountOut;
 
@@ -268,33 +290,37 @@ export function buildRaydiumAmmV4BuyInstructions(
     inputMint,
     payerPubkey,
     true,
-    TOKEN_PROGRAM_ID
+    TOKEN_PROGRAM_ID,
   );
   const userDestinationTokenAccount = getAssociatedTokenAddressSync(
     outputMint,
     payerPubkey,
     true,
-    TOKEN_PROGRAM_ID
+    TOKEN_PROGRAM_ID,
   );
 
   // Handle WSOL wrapping
   if (createInputMintAta && inputMint.equals(WSOL_TOKEN_ACCOUNT)) {
-    const wsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, payerPubkey, true);
+    const wsolAta = getAssociatedTokenAddressSync(
+      NATIVE_MINT,
+      payerPubkey,
+      true,
+    );
     instructions.push(
       createAssociatedTokenAccountInstruction(
         payerPubkey,
         wsolAta,
         payerPubkey,
         NATIVE_MINT,
-        TOKEN_PROGRAM_ID
-      )
+        TOKEN_PROGRAM_ID,
+      ),
     );
     instructions.push(
       SystemProgram.transfer({
         fromPubkey: payerPubkey,
         toPubkey: wsolAta,
         lamports: Number(inputAmount),
-      })
+      }),
     );
     instructions.push(createSyncNativeInstruction(wsolAta));
   } else if (createInputMintAta) {
@@ -304,8 +330,8 @@ export function buildRaydiumAmmV4BuyInstructions(
         userSourceTokenAccount,
         payerPubkey,
         inputMint,
-        TOKEN_PROGRAM_ID
-      )
+        TOKEN_PROGRAM_ID,
+      ),
     );
   }
 
@@ -317,8 +343,8 @@ export function buildRaydiumAmmV4BuyInstructions(
         userDestinationTokenAccount,
         payerPubkey,
         outputMint,
-        TOKEN_PROGRAM_ID
-      )
+        TOKEN_PROGRAM_ID,
+      ),
     );
   }
 
@@ -358,14 +384,24 @@ export function buildRaydiumAmmV4BuyInstructions(
       keys: accounts,
       programId: RAYDIUM_AMM_V4_PROGRAM_ID,
       data,
-    })
+    }),
   );
 
   // Close WSOL ATA if requested
   if (closeInputMintAta && inputMint.equals(WSOL_TOKEN_ACCOUNT)) {
-    const wsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, payerPubkey, true);
+    const wsolAta = getAssociatedTokenAddressSync(
+      NATIVE_MINT,
+      payerPubkey,
+      true,
+    );
     instructions.push(
-      createCloseAccountInstruction(wsolAta, payerPubkey, payerPubkey, [], TOKEN_PROGRAM_ID)
+      createCloseAccountInstruction(
+        wsolAta,
+        payerPubkey,
+        payerPubkey,
+        [],
+        TOKEN_PROGRAM_ID,
+      ),
     );
   }
 
@@ -376,7 +412,7 @@ export function buildRaydiumAmmV4BuyInstructions(
  * Build sell instructions for Raydium AMM V4 protocol
  */
 export function buildRaydiumAmmV4SellInstructions(
-  params: BuildRaydiumAmmV4SellInstructionsParams
+  params: BuildRaydiumAmmV4SellInstructionsParams,
 ): TransactionInstruction[] {
   const {
     payer,
@@ -398,8 +434,12 @@ export function buildRaydiumAmmV4SellInstructions(
   const payerPubkey = payer instanceof Keypair ? payer.publicKey : payer;
   const instructions: TransactionInstruction[] = [];
 
-  const WSOL_TOKEN_ACCOUNT = new PublicKey("So11111111111111111111111111111111111111112");
-  const USDC_TOKEN_ACCOUNT = new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
+  const WSOL_TOKEN_ACCOUNT = new PublicKey(
+    "So11111111111111111111111111111111111111112",
+  );
+  const USDC_TOKEN_ACCOUNT = new PublicKey(
+    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  );
 
   const {
     amm,
@@ -423,15 +463,18 @@ export function buildRaydiumAmmV4SellInstructions(
   ensureMarketAccounts(protocolParams);
 
   // Check pool type
-  const isWsol = coinMint.equals(WSOL_TOKEN_ACCOUNT) || pcMint.equals(WSOL_TOKEN_ACCOUNT);
-  const isUsdc = coinMint.equals(USDC_TOKEN_ACCOUNT) || pcMint.equals(USDC_TOKEN_ACCOUNT);
+  const isWsol =
+    coinMint.equals(WSOL_TOKEN_ACCOUNT) || pcMint.equals(WSOL_TOKEN_ACCOUNT);
+  const isUsdc =
+    coinMint.equals(USDC_TOKEN_ACCOUNT) || pcMint.equals(USDC_TOKEN_ACCOUNT);
 
   if (!isWsol && !isUsdc) {
     throw new Error("Pool must contain WSOL or USDC");
   }
 
   // Determine swap direction (selling token for WSOL/USDC means pc is output)
-  const isBaseIn = pcMint.equals(WSOL_TOKEN_ACCOUNT) || pcMint.equals(USDC_TOKEN_ACCOUNT);
+  const isBaseIn =
+    pcMint.equals(WSOL_TOKEN_ACCOUNT) || pcMint.equals(USDC_TOKEN_ACCOUNT);
 
   // Calculate output
   const swapResult = computeRaydiumAmmV4SwapAmount(
@@ -439,7 +482,7 @@ export function buildRaydiumAmmV4SellInstructions(
     pcReserve,
     isBaseIn,
     inputAmount,
-    slippageBasisPoints
+    slippageBasisPoints,
   );
   const minimumAmountOut = fixedOutputAmount ?? swapResult.minAmountOut;
 
@@ -456,26 +499,30 @@ export function buildRaydiumAmmV4SellInstructions(
     inputMint,
     payerPubkey,
     true,
-    TOKEN_PROGRAM_ID
+    TOKEN_PROGRAM_ID,
   );
   const userDestinationTokenAccount = getAssociatedTokenAddressSync(
     outputMint,
     payerPubkey,
     true,
-    TOKEN_PROGRAM_ID
+    TOKEN_PROGRAM_ID,
   );
 
   // Create output ATA for receiving if needed
   if (createOutputMintAta && outputMint.equals(WSOL_TOKEN_ACCOUNT)) {
-    const wsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, payerPubkey, true);
+    const wsolAta = getAssociatedTokenAddressSync(
+      NATIVE_MINT,
+      payerPubkey,
+      true,
+    );
     instructions.push(
       createAssociatedTokenAccountInstruction(
         payerPubkey,
         wsolAta,
         payerPubkey,
         NATIVE_MINT,
-        TOKEN_PROGRAM_ID
-      )
+        TOKEN_PROGRAM_ID,
+      ),
     );
   } else if (createOutputMintAta) {
     instructions.push(
@@ -484,8 +531,8 @@ export function buildRaydiumAmmV4SellInstructions(
         userDestinationTokenAccount,
         payerPubkey,
         outputMint,
-        TOKEN_PROGRAM_ID
-      )
+        TOKEN_PROGRAM_ID,
+      ),
     );
   }
 
@@ -525,14 +572,24 @@ export function buildRaydiumAmmV4SellInstructions(
       keys: accounts,
       programId: RAYDIUM_AMM_V4_PROGRAM_ID,
       data,
-    })
+    }),
   );
 
   // Close WSOL ATA if requested
   if (closeOutputMintAta && outputMint.equals(WSOL_TOKEN_ACCOUNT)) {
-    const wsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, payerPubkey, true);
+    const wsolAta = getAssociatedTokenAddressSync(
+      NATIVE_MINT,
+      payerPubkey,
+      true,
+    );
     instructions.push(
-      createCloseAccountInstruction(wsolAta, payerPubkey, payerPubkey, [], TOKEN_PROGRAM_ID)
+      createCloseAccountInstruction(
+        wsolAta,
+        payerPubkey,
+        payerPubkey,
+        [],
+        TOKEN_PROGRAM_ID,
+      ),
     );
   }
 
@@ -544,8 +601,8 @@ export function buildRaydiumAmmV4SellInstructions(
         payerPubkey,
         payerPubkey,
         [],
-        TOKEN_PROGRAM_ID
-      )
+        TOKEN_PROGRAM_ID,
+      ),
     );
   }
 
@@ -855,19 +912,19 @@ export function decodeMarketState(data: Buffer): RaydiumMarketState | null {
 export function deriveSerumVaultSigner(
   serumProgram: PublicKey,
   serumMarket: PublicKey,
-  vaultSignerNonce: bigint
+  vaultSignerNonce: bigint,
 ): PublicKey {
   const nonce = Buffer.alloc(8);
   nonce.writeBigUInt64LE(vaultSignerNonce);
   try {
     return PublicKey.createProgramAddressSync(
       [serumMarket.toBuffer(), nonce],
-      serumProgram
+      serumProgram,
     );
   } catch {
     return PublicKey.createProgramAddressSync(
       [serumMarket.toBuffer(), Buffer.from([Number(vaultSignerNonce & 0xffn)])],
-      serumProgram
+      serumProgram,
     );
   }
 }
@@ -879,8 +936,12 @@ export function deriveSerumVaultSigner(
  * 100% from Rust: src/instruction/utils/raydium_amm_v4.rs fetch_amm_info
  */
 export async function fetchAmmInfo(
-  connection: { getAccountInfo: (pubkey: PublicKey) => Promise<{ value?: { data: Buffer } }> },
-  amm: PublicKey
+  connection: {
+    getAccountInfo: (
+      pubkey: PublicKey,
+    ) => Promise<{ value?: { data: Buffer } }>;
+  },
+  amm: PublicKey,
 ): Promise<RaydiumAmmInfo | null> {
   const account = await connection.getAccountInfo(amm);
   if (!account?.value?.data) {
@@ -890,8 +951,12 @@ export async function fetchAmmInfo(
 }
 
 export async function fetchMarketState(
-  connection: { getAccountInfo: (pubkey: PublicKey) => Promise<{ value?: { data: Buffer } }> },
-  market: PublicKey
+  connection: {
+    getAccountInfo: (
+      pubkey: PublicKey,
+    ) => Promise<{ value?: { data: Buffer } }>;
+  },
+  market: PublicKey,
 ): Promise<RaydiumMarketState | null> {
   const account = await connection.getAccountInfo(market);
   if (!account?.value?.data) {

@@ -1,3 +1,4 @@
+import { Buffer } from "buffer";
 /**
  * SPL Token utilities for Sol Trade SDK
  * Provides token account management, mint operations, and instruction building.
@@ -8,24 +9,30 @@ import {
   TransactionInstruction,
   SystemProgram,
   SYSVAR_RENT_PUBKEY,
-} from '@solana/web3.js';
+} from "@solana/web3.js";
 
 // ===== Token Program IDs =====
 
 /**
  * SPL Token Program ID
  */
-export const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+export const TOKEN_PROGRAM_ID = new PublicKey(
+  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+);
 
 /**
  * SPL Token 2022 Program ID
  */
-export const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
+export const TOKEN_2022_PROGRAM_ID = new PublicKey(
+  "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+);
 
 /**
  * Associated Token Account Program ID
  */
-export const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
+export const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey(
+  "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+);
 
 // ===== Token Account Types =====
 
@@ -133,7 +140,7 @@ export class TokenInstructionBuilder {
     decimals: number,
     mintAuthority: PublicKey,
     freezeAuthority: PublicKey | null,
-    tokenProgram: PublicKey = TOKEN_PROGRAM_ID
+    tokenProgram: PublicKey = TOKEN_PROGRAM_ID,
   ): TransactionInstruction {
     const keys = [
       { pubkey: mint, isSigner: false, isWritable: true },
@@ -164,7 +171,7 @@ export class TokenInstructionBuilder {
     account: PublicKey,
     mint: PublicKey,
     owner: PublicKey,
-    tokenProgram: PublicKey = TOKEN_PROGRAM_ID
+    tokenProgram: PublicKey = TOKEN_PROGRAM_ID,
   ): TransactionInstruction {
     const keys = [
       { pubkey: account, isSigner: false, isWritable: true },
@@ -191,7 +198,7 @@ export class TokenInstructionBuilder {
     owner: PublicKey,
     amount: bigint,
     multiSigners: PublicKey[] = [],
-    tokenProgram: PublicKey = TOKEN_PROGRAM_ID
+    tokenProgram: PublicKey = TOKEN_PROGRAM_ID,
   ): TransactionInstruction {
     const keys = [
       { pubkey: source, isSigner: false, isWritable: true },
@@ -226,7 +233,7 @@ export class TokenInstructionBuilder {
     amount: bigint,
     decimals: number,
     multiSigners: PublicKey[] = [],
-    tokenProgram: PublicKey = TOKEN_PROGRAM_ID
+    tokenProgram: PublicKey = TOKEN_PROGRAM_ID,
   ): TransactionInstruction {
     const keys = [
       { pubkey: source, isSigner: false, isWritable: true },
@@ -261,12 +268,16 @@ export class TokenInstructionBuilder {
     authority: PublicKey,
     amount: bigint,
     multiSigners: PublicKey[] = [],
-    tokenProgram: PublicKey = TOKEN_PROGRAM_ID
+    tokenProgram: PublicKey = TOKEN_PROGRAM_ID,
   ): TransactionInstruction {
     const keys = [
       { pubkey: mint, isSigner: false, isWritable: true },
       { pubkey: destination, isSigner: false, isWritable: true },
-      { pubkey: authority, isSigner: multiSigners.length === 0, isWritable: false },
+      {
+        pubkey: authority,
+        isSigner: multiSigners.length === 0,
+        isWritable: false,
+      },
       ...multiSigners.map((signer) => ({
         pubkey: signer,
         isSigner: true,
@@ -294,7 +305,7 @@ export class TokenInstructionBuilder {
     owner: PublicKey,
     amount: bigint,
     multiSigners: PublicKey[] = [],
-    tokenProgram: PublicKey = TOKEN_PROGRAM_ID
+    tokenProgram: PublicKey = TOKEN_PROGRAM_ID,
   ): TransactionInstruction {
     const keys = [
       { pubkey: account, isSigner: false, isWritable: true },
@@ -327,7 +338,7 @@ export class TokenInstructionBuilder {
     owner: PublicKey,
     amount: bigint,
     multiSigners: PublicKey[] = [],
-    tokenProgram: PublicKey = TOKEN_PROGRAM_ID
+    tokenProgram: PublicKey = TOKEN_PROGRAM_ID,
   ): TransactionInstruction {
     const keys = [
       { pubkey: account, isSigner: false, isWritable: true },
@@ -358,7 +369,7 @@ export class TokenInstructionBuilder {
     account: PublicKey,
     owner: PublicKey,
     multiSigners: PublicKey[] = [],
-    tokenProgram: PublicKey = TOKEN_PROGRAM_ID
+    tokenProgram: PublicKey = TOKEN_PROGRAM_ID,
   ): TransactionInstruction {
     const keys = [
       { pubkey: account, isSigner: false, isWritable: true },
@@ -387,7 +398,7 @@ export class TokenInstructionBuilder {
     destination: PublicKey,
     owner: PublicKey,
     multiSigners: PublicKey[] = [],
-    tokenProgram: PublicKey = TOKEN_PROGRAM_ID
+    tokenProgram: PublicKey = TOKEN_PROGRAM_ID,
   ): TransactionInstruction {
     const keys = [
       { pubkey: account, isSigner: false, isWritable: true },
@@ -414,7 +425,7 @@ export class TokenInstructionBuilder {
    */
   static syncNative(
     nativeAccount: PublicKey,
-    tokenProgram: PublicKey = TOKEN_PROGRAM_ID
+    tokenProgram: PublicKey = TOKEN_PROGRAM_ID,
   ): TransactionInstruction {
     const keys = [{ pubkey: nativeAccount, isSigner: false, isWritable: true }];
 
@@ -442,14 +453,14 @@ export class TokenUtil {
     owner: PublicKey,
     allowOwnerOffCurve: boolean = false,
     tokenProgram: PublicKey = TOKEN_PROGRAM_ID,
-    associatedTokenProgram: PublicKey = ASSOCIATED_TOKEN_PROGRAM_ID
+    associatedTokenProgram: PublicKey = ASSOCIATED_TOKEN_PROGRAM_ID,
   ): Promise<PublicKey> {
     if (!allowOwnerOffCurve && !PublicKey.isOnCurve(owner.toBytes())) {
-      throw new Error('Token owner is off curve');
+      throw new Error("Token owner is off curve");
     }
     const [address] = await PublicKey.findProgramAddress(
       [owner.toBuffer(), tokenProgram.toBuffer(), mint.toBuffer()],
-      associatedTokenProgram
+      associatedTokenProgram,
     );
     return address;
   }
@@ -463,7 +474,7 @@ export class TokenUtil {
     owner: PublicKey,
     mint: PublicKey,
     tokenProgram: PublicKey = TOKEN_PROGRAM_ID,
-    associatedTokenProgram: PublicKey = ASSOCIATED_TOKEN_PROGRAM_ID
+    associatedTokenProgram: PublicKey = ASSOCIATED_TOKEN_PROGRAM_ID,
   ): TransactionInstruction {
     const keys = [
       { pubkey: payer, isSigner: true, isWritable: true },
@@ -493,7 +504,7 @@ export class TokenUtil {
     owner: PublicKey,
     mint: PublicKey,
     tokenProgram: PublicKey = TOKEN_PROGRAM_ID,
-    associatedTokenProgram: PublicKey = ASSOCIATED_TOKEN_PROGRAM_ID
+    associatedTokenProgram: PublicKey = ASSOCIATED_TOKEN_PROGRAM_ID,
   ): TransactionInstruction {
     const keys = [
       { pubkey: payer, isSigner: true, isWritable: true },
@@ -537,9 +548,13 @@ export class TokenUtil {
   /**
    * Format token amount for display
    */
-  static formatAmount(amount: bigint, decimals: number, maxDecimals: number = 6): string {
+  static formatAmount(
+    amount: bigint,
+    decimals: number,
+    maxDecimals: number = 6,
+  ): string {
     const uiAmount = this.toUiAmount(amount, decimals);
-    return uiAmount.toLocaleString('en-US', {
+    return uiAmount.toLocaleString("en-US", {
       maximumFractionDigits: maxDecimals,
     });
   }
@@ -550,7 +565,9 @@ export class TokenUtil {
 /**
  * Wrapped SOL mint
  */
-export const WSOL_MINT = new PublicKey('So11111111111111111111111111111111111111112');
+export const WSOL_MINT = new PublicKey(
+  "So11111111111111111111111111111111111111112",
+);
 
 /**
  * Native SOL mint (for Token-2022)
@@ -563,14 +580,14 @@ export function getAssociatedTokenAddressSync(
   owner: PublicKey,
   allowOwnerOffCurve = false,
   tokenProgram: PublicKey = TOKEN_PROGRAM_ID,
-  associatedTokenProgram: PublicKey = ASSOCIATED_TOKEN_PROGRAM_ID
+  associatedTokenProgram: PublicKey = ASSOCIATED_TOKEN_PROGRAM_ID,
 ): PublicKey {
   if (!allowOwnerOffCurve && !PublicKey.isOnCurve(owner.toBytes())) {
-    throw new Error('Token owner is off curve');
+    throw new Error("Token owner is off curve");
   }
   return PublicKey.findProgramAddressSync(
     [owner.toBuffer(), tokenProgram.toBuffer(), mint.toBuffer()],
-    associatedTokenProgram
+    associatedTokenProgram,
   )[0];
 }
 
@@ -581,7 +598,7 @@ export function createAssociatedTokenAccountInstruction(
   owner: PublicKey,
   mint: PublicKey,
   tokenProgram: PublicKey = TOKEN_PROGRAM_ID,
-  associatedTokenProgram: PublicKey = ASSOCIATED_TOKEN_PROGRAM_ID
+  associatedTokenProgram: PublicKey = ASSOCIATED_TOKEN_PROGRAM_ID,
 ): TransactionInstruction {
   return TokenUtil.createAssociatedTokenAccountInstruction(
     payer,
@@ -589,7 +606,7 @@ export function createAssociatedTokenAccountInstruction(
     owner,
     mint,
     tokenProgram,
-    associatedTokenProgram
+    associatedTokenProgram,
   );
 }
 
@@ -600,7 +617,7 @@ export function createAssociatedTokenAccountIdempotentInstruction(
   owner: PublicKey,
   mint: PublicKey,
   tokenProgram: PublicKey = TOKEN_PROGRAM_ID,
-  associatedTokenProgram: PublicKey = ASSOCIATED_TOKEN_PROGRAM_ID
+  associatedTokenProgram: PublicKey = ASSOCIATED_TOKEN_PROGRAM_ID,
 ): TransactionInstruction {
   return TokenUtil.createAssociatedTokenAccountIdempotentInstruction(
     payer,
@@ -608,7 +625,7 @@ export function createAssociatedTokenAccountIdempotentInstruction(
     owner,
     mint,
     tokenProgram,
-    associatedTokenProgram
+    associatedTokenProgram,
   );
 }
 
@@ -620,21 +637,23 @@ export function createCloseAccountInstruction(
   destination: PublicKey,
   authority: PublicKey,
   multiSigners: TokenMultisigner[] = [],
-  tokenProgram: PublicKey = TOKEN_PROGRAM_ID
+  tokenProgram: PublicKey = TOKEN_PROGRAM_ID,
 ): TransactionInstruction {
   return TokenInstructionBuilder.closeAccount(
     account,
     destination,
     authority,
-    multiSigners.map((signer) => signer instanceof PublicKey ? signer : signer.publicKey),
-    tokenProgram
+    multiSigners.map((signer) =>
+      signer instanceof PublicKey ? signer : signer.publicKey,
+    ),
+    tokenProgram,
   );
 }
 
 /** Build a SyncNative instruction for a wrapped SOL account. */
 export function createSyncNativeInstruction(
   account: PublicKey,
-  tokenProgram: PublicKey = TOKEN_PROGRAM_ID
+  tokenProgram: PublicKey = TOKEN_PROGRAM_ID,
 ): TransactionInstruction {
   return TokenInstructionBuilder.syncNative(account, tokenProgram);
 }
@@ -642,12 +661,16 @@ export function createSyncNativeInstruction(
 /**
  * USDC mint
  */
-export const USDC_MINT = new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
+export const USDC_MINT = new PublicKey(
+  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+);
 
 /**
  * USDT mint
  */
-export const USDT_MINT = new PublicKey('Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB');
+export const USDT_MINT = new PublicKey(
+  "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+);
 
 /**
  * Common token decimals
