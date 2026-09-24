@@ -291,7 +291,7 @@ export function closeWsol(owner: PublicKey): TransactionInstruction {
       { pubkey: owner, isSigner: true, isWritable: false },
     ],
     programId: TOKEN_PROGRAM,
-    data: Buffer.from([9, 0, 0, 0, 0, 0, 0, 0]), // close_account discriminator
+    data: Buffer.from([9]), // close_account discriminator
   });
 }
 
@@ -311,7 +311,7 @@ function closeWsolForMint(
       { pubkey: owner, isSigner: true, isWritable: false },
     ],
     programId: tokenProgram,
-    data: Buffer.from([9, 0, 0, 0, 0, 0, 0, 0]),
+    data: Buffer.from([9]),
   });
 }
 
@@ -374,6 +374,8 @@ export interface BuildBuyParams {
   closeInputMintAta?: boolean;
   createOutputMintAta?: boolean;
   useExactQuoteAmount?: boolean;
+  /** Override buy volume tracking; omission preserves the cashback-coin default. */
+  trackVolume?: boolean;
   fixedOutputAmount?: bigint;
 }
 
@@ -555,7 +557,7 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
   // Add volume accumulator accounts for quote (WSOL/USDC) buy
   if (quoteIsWsolOrUsdc) {
     accounts.push(
-      { pubkey: PUMPSWAP_GLOBAL_VOLUME_ACCUMULATOR, isSigner: false, isWritable: true }
+      { pubkey: PUMPSWAP_GLOBAL_VOLUME_ACCUMULATOR, isSigner: false, isWritable: false }
     );
     const userVolumeAccumulator = getUserVolumeAccumulatorPDA(payer);
     accounts.push({ pubkey: userVolumeAccumulator, isSigner: false, isWritable: true });
@@ -567,10 +569,10 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
     { pubkey: PUMPSWAP_FEE_PROGRAM, isSigner: false, isWritable: false }
   );
 
-  // Add cashback WSOL ATA if needed
+  // Add cashback quote ATA if needed
   if (isCashbackCoin) {
-    const wsolAta = getUserVolumeAccumulatorWsolAta(payer);
-    accounts.push({ pubkey: wsolAta, isSigner: false, isWritable: true });
+    const quoteAta = getUserVolumeAccumulatorQuoteAta(payer, quoteMint, quoteTokenProgram);
+    accounts.push({ pubkey: quoteAta, isSigner: false, isWritable: true });
   }
 
   if (protocolParams.coinCreator === undefined || !protocolParams.coinCreator.equals(PublicKey.default)) {
@@ -586,7 +588,7 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
   });
 
   // Build instruction data
-  const trackVolume = isCashbackCoin ? 1 : 0;
+  const trackVolume = (params.trackVolume ?? isCashbackCoin) ? 1 : 0;
   let data: Buffer;
 
   if (fixedOutputAmount !== undefined) {
@@ -627,7 +629,10 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
 
   // Close WSOL ATA if requested
   if (closeInputMintAta) {
-    instructions.push(closeWsol(payer));
+    const closeInstruction = closeWsolForMint(payer, inputStableMint, inputStableTokenProgram);
+    if (closeInstruction) {
+      instructions.push(closeInstruction);
+    }
   }
 
   return instructions;
@@ -763,7 +768,7 @@ export function buildSellInstructions(params: BuildSellParams): TransactionInstr
   // Add volume accumulator accounts for non-quote sell
   if (!quoteIsWsolOrUsdc) {
     accounts.push(
-      { pubkey: PUMPSWAP_GLOBAL_VOLUME_ACCUMULATOR, isSigner: false, isWritable: true }
+      { pubkey: PUMPSWAP_GLOBAL_VOLUME_ACCUMULATOR, isSigner: false, isWritable: false }
     );
     const userVolumeAccumulator = getUserVolumeAccumulatorPDA(payer);
     accounts.push({ pubkey: userVolumeAccumulator, isSigner: false, isWritable: true });
@@ -835,7 +840,7 @@ export function buildSellInstructions(params: BuildSellParams): TransactionInstr
         { pubkey: payer, isSigner: true, isWritable: false },
       ],
       programId: quoteIsWsolOrUsdc ? baseTokenProgram : quoteTokenProgram,
-      data: Buffer.from([9, 0, 0, 0, 0, 0, 0, 0]),
+      data: Buffer.from([9]),
     });
     instructions.push(closeIx);
   }
