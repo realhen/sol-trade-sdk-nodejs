@@ -282,6 +282,8 @@ export interface PumpFunParams {
   closeTokenAccountWhenSell?: boolean;
   /** From an already-decoded event (`tradeEvent.feeRecipient`); default pubkey -> random pool */
   feeRecipient?: PublicKey;
+  /** Buyback recipient from caller-validated, current protocol configuration; omission uses the existing random pool. */
+  buybackFeeRecipient?: PublicKey;
   /** Layout selector: default/Solscan SOL sentinel keeps legacy SOL; WSOL/USDC selects V2. */
   quoteMint?: PublicKey;
 }
@@ -651,7 +653,7 @@ export function buildPumpFunBuyInstructions(
     { pubkey: PUMPFUN_FEE_CONFIG, isSigner: false, isWritable: false },
     { pubkey: PUMPFUN_FEE_PROGRAM, isSigner: false, isWritable: false },
     { pubkey: bondingCurveV2, isSigner: false, isWritable: false },
-    { pubkey: getPumpFunProtocolExtraFeeRecipientRandom(), isSigner: false, isWritable: true },
+    { pubkey: protocolParams.buybackFeeRecipient ?? getPumpFunProtocolExtraFeeRecipientRandom(), isSigner: false, isWritable: true },
   ];
 
   instructions.push(
@@ -774,7 +776,7 @@ export function buildPumpFunSellInstructions(
 
   // Add bonding curve v2
   keys.push({ pubkey: bondingCurveV2, isSigner: false, isWritable: false });
-  keys.push({ pubkey: getPumpFunProtocolExtraFeeRecipientRandom(), isSigner: false, isWritable: true });
+  keys.push({ pubkey: protocolParams.buybackFeeRecipient ?? getPumpFunProtocolExtraFeeRecipientRandom(), isSigner: false, isWritable: true });
 
   instructions.push(
     new TransactionInstruction({
@@ -851,7 +853,7 @@ export function buildPumpFunBuyV2Instructions(
     protocolParams.feeRecipient,
     bondingCurve.isMayhemMode
   );
-  const buybackFeeRecipient = getPumpFunBuybackFeeRecipientRandom();
+  const buybackFeeRecipient = protocolParams.buybackFeeRecipient ?? getPumpFunBuybackFeeRecipientRandom();
 
   const associatedQuoteFeeRecipient = associatedTokenAddress(
     quoteMint,
@@ -1035,7 +1037,7 @@ export function buildPumpFunSellV2Instructions(
     protocolParams.feeRecipient,
     bondingCurve.isMayhemMode
   );
-  const buybackFeeRecipient = getPumpFunBuybackFeeRecipientRandom();
+  const buybackFeeRecipient = protocolParams.buybackFeeRecipient ?? getPumpFunBuybackFeeRecipientRandom();
 
   const associatedQuoteFeeRecipient = associatedTokenAddress(
     quoteMint,

@@ -345,6 +345,10 @@ export function createAssociatedTokenAccountIdempotent(
 // ===== Params Interface =====
 
 export interface PumpSwapParams {
+  /** Protocol recipient from caller-validated, current configuration; omission preserves default selection. */
+  feeRecipient?: PublicKey;
+  /** Buyback recipient from caller-validated, current configuration; omission uses the existing random pool. */
+  buybackFeeRecipient?: PublicKey;
   pool: PublicKey;
   baseMint: PublicKey;
   quoteMint: PublicKey;
@@ -507,7 +511,8 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
   const userQuoteTokenAccount = getAssociatedTokenAddress(payer, quoteMint, quoteTokenProgram);
 
   // Determine fee recipient
-  const feeRecipient = isMayhemMode ? getMayhemFeeRecipientRandom() : getPumpSwapProtocolFeeRecipientRandom();
+  const feeRecipient = protocolParams.feeRecipient ??
+    (isMayhemMode ? getMayhemFeeRecipientRandom() : getPumpSwapProtocolFeeRecipientRandom());
   const feeRecipientAta = getFeeRecipientAta(feeRecipient, quoteMint, quoteTokenProgram);
 
   // Build instructions
@@ -577,7 +582,7 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
     const poolV2 = getPoolV2PDA(baseMint);
     accounts.push({ pubkey: poolV2, isSigner: false, isWritable: false });
   }
-  const protocolExtraFee = getPumpSwapProtocolExtraFeeRecipientRandom();
+  const protocolExtraFee = protocolParams.buybackFeeRecipient ?? getPumpSwapProtocolExtraFeeRecipientRandom();
   accounts.push({ pubkey: protocolExtraFee, isSigner: false, isWritable: false });
   accounts.push({
     pubkey: getFeeRecipientAta(protocolExtraFee, quoteMint, quoteTokenProgram),
@@ -724,7 +729,8 @@ export function buildSellInstructions(params: BuildSellParams): TransactionInstr
   const userQuoteTokenAccount = getAssociatedTokenAddress(payer, quoteMint, quoteTokenProgram);
 
   // Determine fee recipient
-  const feeRecipient = isMayhemMode ? getMayhemFeeRecipientRandom() : getPumpSwapProtocolFeeRecipientRandom();
+  const feeRecipient = protocolParams.feeRecipient ??
+    (isMayhemMode ? getMayhemFeeRecipientRandom() : getPumpSwapProtocolFeeRecipientRandom());
   const feeRecipientAta = getFeeRecipientAta(feeRecipient, quoteMint, quoteTokenProgram);
 
   // Build instructions
@@ -789,7 +795,7 @@ export function buildSellInstructions(params: BuildSellParams): TransactionInstr
     const poolV2 = getPoolV2PDA(baseMint);
     accounts.push({ pubkey: poolV2, isSigner: false, isWritable: false });
   }
-  const protocolExtraFee = getPumpSwapProtocolExtraFeeRecipientRandom();
+  const protocolExtraFee = protocolParams.buybackFeeRecipient ?? getPumpSwapProtocolExtraFeeRecipientRandom();
   accounts.push({ pubkey: protocolExtraFee, isSigner: false, isWritable: false });
   accounts.push({
     pubkey: getFeeRecipientAta(protocolExtraFee, quoteMint, quoteTokenProgram),
