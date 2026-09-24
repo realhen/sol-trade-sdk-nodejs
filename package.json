@@ -40,6 +40,10 @@
       "types": "./dist/perf/index.d.ts",
       "import": "./dist/perf/index.mjs",
       "require": "./dist/perf/index.js"
+    },
+    "./browser": {
+      "types": "./dist/browser.d.mts",
+      "import": "./dist/browser.mjs"
     }
   },
   "files": [
@@ -47,7 +51,7 @@
     "src"
   ],
   "scripts": {
-    "build": "tsup src/index.ts src/cache/index.ts src/pool/index.ts src/rpc/index.ts src/swqos/index.ts src/trading/index.ts src/perf/index.ts --format cjs,esm --dts --clean",
+    "build": "tsup src/index.ts src/cache/index.ts src/pool/index.ts src/rpc/index.ts src/swqos/index.ts src/trading/index.ts src/perf/index.ts --format cjs,esm --dts --clean && npm run build:browser",
     "dev": "tsup src/index.ts src/cache/index.ts src/pool/index.ts src/rpc/index.ts src/swqos/index.ts src/trading/index.ts src/perf/index.ts --format cjs,esm --dts --watch",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -56,7 +60,8 @@
     "lint:fix": "eslint src --ext .ts --fix",
     "typecheck": "tsc --noEmit",
     "typecheck:examples": "tsc -p examples/tsconfig.json",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "build:browser": "tsup src/browser.ts --format esm --dts --platform browser --target es2022"
   },
   "keywords": [
     "solana",
@@ -86,7 +91,8 @@
     "protobufjs": "^7.6.5",
     "quico": "^0.4.0",
     "selfsigned": "^5.5.0",
-    "tweetnacl": "^1.0.3"
+    "tweetnacl": "^1.0.3",
+    "buffer": "^6.0.3"
   },
   "devDependencies": {
     "@types/bn.js": "^5.1.5",

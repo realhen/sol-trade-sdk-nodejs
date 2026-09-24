@@ -1,3 +1,4 @@
+import { Buffer } from 'buffer';
 /**
  * Constants for Sol Trade SDK
  */

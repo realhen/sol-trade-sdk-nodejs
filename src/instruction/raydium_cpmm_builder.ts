@@ -1,3 +1,4 @@
+import { Buffer } from 'buffer';
 /**
  * Raydium CPMM (Concentrated Pool Market Maker) Protocol Instruction Builder
  *

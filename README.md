@@ -415,3 +415,35 @@ MIT License
 3. Pay attention to slippage settings to avoid transaction failures
 4. Monitor balances and transaction fees
 5. Comply with relevant laws and regulations
+
+## Browser instruction builders
+
+Bundler-based browser applications can import `sol-trade-sdk/browser` to construct
+instructions without loading the SDK's Node RPC, signing, or transport workflows.
+The existing package root and Node subpaths remain available. The browser entry
+includes explicit `buffer` imports; applications do not need to set a global Buffer.
+
+```ts
+import { PublicKey } from '@solana/web3.js';
+import { pumpfun } from 'sol-trade-sdk/browser';
+
+// Obtain and validate these account snapshots in your application.
+function buildBuy(
+  payer: PublicKey,
+  mint: PublicKey,
+  protocolParams: pumpfun.PumpFunParams,
+) {
+  return pumpfun.buildPumpFunBuyInstructions({
+    payer,
+    outputMint: mint,
+    inputAmount: 10_000_000n, // lamports
+    slippageBasisPoints: 100n,
+    protocolParams,
+  });
+}
+```
+
+Callers own snapshot freshness, account validation, transaction assembly, signing,
+and submission. Build both entrypoints with `npm run build`, or only the browser
+entrypoint with `npm run build:browser`. The browser output is ESM for a bundler;
+it is not a standalone script for direct inclusion in a page.

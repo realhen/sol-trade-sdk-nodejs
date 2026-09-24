@@ -1,3 +1,4 @@
+import { Buffer } from 'buffer';
 /**
  * Meteora DAMM V2 Protocol Instruction Builder
  *
