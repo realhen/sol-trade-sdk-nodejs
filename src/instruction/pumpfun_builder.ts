@@ -293,6 +293,12 @@ export interface PumpFunBuildBuyParams {
   inputAmount: bigint;
   slippageBasisPoints?: bigint;
   fixedOutputAmount?: bigint;
+  /**
+   * Minimum received in output atomic units, encoded without SDK quoting or additional slippage.
+   * Caller owns quote freshness. Requires exact-input mode and no fixedOutputAmount.
+   * Values outside u64 or incompatible modes throw synchronously.
+   */
+  minimumOutputAmount?: bigint;
   createOutputMintAta?: boolean;
   createInputMintAta?: boolean;
   closeInputMintAta?: boolean;
@@ -307,6 +313,12 @@ export interface PumpFunBuildSellParams {
   inputAmount: bigint;
   slippageBasisPoints?: bigint;
   fixedOutputAmount?: bigint;
+  /**
+   * Minimum received in output atomic units, encoded without SDK quoting or additional slippage.
+   * Caller owns quote freshness. Requires exact-input mode and no fixedOutputAmount.
+   * Values outside u64 or incompatible modes throw synchronously.
+   */
+  minimumOutputAmount?: bigint;
   createOutputMintAta?: boolean;
   closeInputMintAta?: boolean;
   protocolParams: PumpFunParams;
@@ -315,6 +327,19 @@ export interface PumpFunBuildSellParams {
 // ============================================
 // Helper Functions
 // ============================================
+
+function validateMinimumOutput(params: {
+  minimumOutputAmount?: bigint;
+  fixedOutputAmount?: bigint;
+}, exactInput = true): void {
+  if (params.minimumOutputAmount === undefined) return;
+  if (params.minimumOutputAmount < 0n || params.minimumOutputAmount > 18446744073709551615n) {
+    throw new Error("minimumOutputAmount must fit an unsigned 64-bit amount");
+  }
+  if (params.fixedOutputAmount !== undefined || !exactInput) {
+    throw new Error("minimumOutputAmount requires exact-input mode without fixedOutputAmount");
+  }
+}
 
 const MAX_SLIPPAGE_BPS = BigInt(9999);
 const PUMPFUN_FEE_BASIS_POINTS = 95n;
@@ -518,6 +543,7 @@ function getSellSolAmountFromTokenAmount(
 export function buildPumpFunBuyInstructions(
   params: PumpFunBuildBuyParams
 ): TransactionInstruction[] {
+  validateMinimumOutput(params, params.useExactSolAmount);
 	const {
 	  payer,
 	  inputMint = SOL_TOKEN_ACCOUNT,
@@ -602,9 +628,9 @@ export function buildPumpFunBuyInstructions(
   // Track volume for cashback coins
   const trackVolume = bondingCurve.isCashbackCoin ? 1 : 0;
 
-  const buyTokenAmount = fixedOutputAmount
+  const buyTokenAmount = params.minimumOutputAmount ?? (fixedOutputAmount
     ? fixedOutputAmount
-    : getBuyTokenAmountFromSolAmount(inputAmount, bondingCurve, creator);
+    : getBuyTokenAmountFromSolAmount(inputAmount, bondingCurve, creator));
   const maxSolCost = calculateWithSlippageBuy(inputAmount, slippageBasisPoints);
 
   // Build instruction data
@@ -617,7 +643,7 @@ export function buildPumpFunBuyInstructions(
     data[24] = trackVolume;
   } else if (useExactSolAmount) {
     // buy_exact_sol_in(spendable_sol_in: u64, min_tokens_out: u64, track_volume)
-    const minTokensOut = calculateWithSlippageSell(buyTokenAmount, slippageBasisPoints);
+    const minTokensOut = params.minimumOutputAmount ?? calculateWithSlippageSell(buyTokenAmount, slippageBasisPoints);
     data = Buffer.alloc(25);
     PUMPFUN_BUY_EXACT_SOL_IN_DISCRIMINATOR.copy(data, 0);
     data.writeBigUInt64LE(inputAmount, 8);
@@ -672,6 +698,7 @@ export function buildPumpFunBuyInstructions(
 export function buildPumpFunSellInstructions(
   params: PumpFunBuildSellParams
 ): TransactionInstruction[] {
+  validateMinimumOutput(params, true);
   const {
     payer,
     inputMint,
@@ -739,10 +766,11 @@ export function buildPumpFunSellInstructions(
   const bondingCurveV2 = getBondingCurveV2Pda(inputMint);
 
   // Build instruction data (sell: token_amount, min_sol_output)
-  const expectedSolOutput = getSellSolAmountFromTokenAmount(inputAmount, bondingCurve, creator);
-  const minSolOutput = fixedOutputAmount
+  const minSolOutput = params.minimumOutputAmount ?? (fixedOutputAmount
     ? fixedOutputAmount
-    : calculateWithSlippageSell(expectedSolOutput, slippageBasisPoints);
+    : calculateWithSlippageSell(
+      getSellSolAmountFromTokenAmount(inputAmount, bondingCurve, creator), slippageBasisPoints
+    ));
   const data = Buffer.alloc(24);
   PUMPFUN_SELL_DISCRIMINATOR.copy(data, 0);
   data.writeBigUInt64LE(inputAmount, 8);
@@ -806,6 +834,7 @@ export function buildPumpFunSellInstructions(
 export function buildPumpFunBuyV2Instructions(
   params: PumpFunBuildBuyParams
 ): TransactionInstruction[] {
+  validateMinimumOutput(params, params.useExactSolAmount);
   const {
     payer,
     inputMint = SOL_TOKEN_ACCOUNT,
@@ -895,9 +924,9 @@ export function buildPumpFunBuyV2Instructions(
     );
   }
 
-  const buyTokenAmount = fixedOutputAmount
+  const buyTokenAmount = params.minimumOutputAmount ?? (fixedOutputAmount
     ? fixedOutputAmount
-    : getBuyTokenAmountFromSolAmount(inputAmount, bondingCurve, creator);
+    : getBuyTokenAmountFromSolAmount(inputAmount, bondingCurve, creator));
   const maxSolCost = calculateWithSlippageBuy(inputAmount, slippageBasisPoints);
   let data: Buffer;
   let quoteAmountToFund: bigint;
@@ -908,7 +937,7 @@ export function buildPumpFunBuyV2Instructions(
     data.writeBigUInt64LE(inputAmount, 16);
     quoteAmountToFund = inputAmount;
   } else if (useExactSolAmount) {
-    const minTokensOut = calculateWithSlippageSell(buyTokenAmount, slippageBasisPoints);
+    const minTokensOut = params.minimumOutputAmount ?? calculateWithSlippageSell(buyTokenAmount, slippageBasisPoints);
     data = Buffer.alloc(24);
     PUMPFUN_BUY_EXACT_QUOTE_IN_V2_DISCRIMINATOR.copy(data, 0);
     data.writeBigUInt64LE(inputAmount, 8);
@@ -992,6 +1021,7 @@ export function buildPumpFunBuyV2Instructions(
 export function buildPumpFunSellV2Instructions(
   params: PumpFunBuildSellParams
 ): TransactionInstruction[] {
+  validateMinimumOutput(params, true);
   const {
     payer,
     inputMint,
@@ -1079,10 +1109,11 @@ export function buildPumpFunSellV2Instructions(
     );
   }
 
-  const expectedSolOutput = getSellSolAmountFromTokenAmount(inputAmount, bondingCurve, creator);
-  const minSolOutput = fixedOutputAmount
+  const minSolOutput = params.minimumOutputAmount ?? (fixedOutputAmount
     ? fixedOutputAmount
-    : calculateWithSlippageSell(expectedSolOutput, slippageBasisPoints);
+    : calculateWithSlippageSell(
+      getSellSolAmountFromTokenAmount(inputAmount, bondingCurve, creator), slippageBasisPoints
+    ));
   const data = Buffer.alloc(24);
   PUMPFUN_SELL_V2_DISCRIMINATOR.copy(data, 0);
   data.writeBigUInt64LE(inputAmount, 8);
