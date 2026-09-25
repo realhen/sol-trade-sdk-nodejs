@@ -377,6 +377,12 @@ export interface BuildBuyParams {
   /** Override buy volume tracking; omission preserves the cashback-coin default. */
   trackVolume?: boolean;
   fixedOutputAmount?: bigint;
+  /**
+   * Minimum received in output atomic units, encoded without SDK quoting or additional slippage.
+   * Caller owns quote freshness. Requires exact quote-input buy or base-input sell and no fixedOutputAmount.
+   * Values outside u64 or incompatible modes throw synchronously.
+   */
+  minimumOutputAmount?: bigint;
 }
 
 export interface BuildSellParams {
@@ -388,9 +394,25 @@ export interface BuildSellParams {
   closeOutputMintAta?: boolean;
   closeInputMintAta?: boolean;
   fixedOutputAmount?: bigint;
+  /**
+   * Minimum received in output atomic units, encoded without SDK quoting or additional slippage.
+   * Caller owns quote freshness. Requires exact quote-input buy or base-input sell and no fixedOutputAmount.
+   * Values outside u64 or incompatible modes throw synchronously.
+   */
+  minimumOutputAmount?: bigint;
 }
 
 // ===== Instruction Builders =====
+
+function validateMinimumOutput(params: { minimumOutputAmount?: bigint; fixedOutputAmount?: bigint }): void {
+  if (params.minimumOutputAmount === undefined) return;
+  if (params.minimumOutputAmount < 0n || params.minimumOutputAmount > 18446744073709551615n) {
+    throw new Error('minimumOutputAmount must fit an unsigned 64-bit amount');
+  }
+  if (params.fixedOutputAmount !== undefined) {
+    throw new Error('minimumOutputAmount cannot be combined with fixedOutputAmount');
+  }
+}
 
 function getEffectiveFeeBasisPoints(protocolParams: PumpSwapParams): PumpSwapFeeBasisPoints {
   const hasCoinCreator = protocolParams.coinCreator === undefined
@@ -420,6 +442,7 @@ function getEffectiveFeeBasisPoints(protocolParams: PumpSwapParams): PumpSwapFee
  * 100% port from Rust: src/instruction/pumpswap.rs build_buy_instructions
  */
 export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruction[] {
+  validateMinimumOutput(params);
   const {
     payer,
     inputAmount,
@@ -452,7 +475,9 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
     isMayhemMode,
     isCashbackCoin,
   } = protocolParams;
-  effectiveQuoteReserves(poolQuoteTokenReserves, virtualQuoteReserves);
+  if (params.minimumOutputAmount === undefined) {
+    effectiveQuoteReserves(poolQuoteTokenReserves, virtualQuoteReserves);
+  }
 
   // Check if pool contains WSOL or USDC
   const isWsol = quoteMint.equals(WSOL_TOKEN_ACCOUNT) || baseMint.equals(WSOL_TOKEN_ACCOUNT);
@@ -468,13 +493,21 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
   const outputTradeMint = quoteIsWsolOrUsdc ? baseMint : quoteMint;
   const outputTradeTokenProgram = quoteIsWsolOrUsdc ? baseTokenProgram : quoteTokenProgram;
 
-  const feeBasisPoints = getEffectiveFeeBasisPoints(protocolParams);
+  const feeBasisPoints = params.minimumOutputAmount === undefined
+    ? getEffectiveFeeBasisPoints(protocolParams)
+    : legacyPumpSwapFeeBasisPoints(false);
 
   // Calculate trade amounts
   let tokenAmount: bigint;
   let solAmount: bigint;
 
-  if (quoteIsWsolOrUsdc) {
+  if (params.minimumOutputAmount !== undefined) {
+    if (!useExactQuoteAmount || !quoteIsWsolOrUsdc) {
+      throw new Error('minimumOutputAmount requires exact quote-input buy');
+    }
+    tokenAmount = params.minimumOutputAmount;
+    solAmount = inputAmount;
+  } else if (quoteIsWsolOrUsdc) {
     // Buying base with quote (WSOL/USDC)
     const result = buyQuoteInputInternalWithFees(
       inputAmount,
@@ -599,7 +632,7 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
     data[24] = trackVolume;
   } else if (quoteIsWsolOrUsdc && useExactQuoteAmount) {
     // buy_exact_quote_in(spendable_quote_in, min_base_amount_out, track_volume)
-    const minBaseAmountOut = calculateWithSlippageSell(tokenAmount, slippageBasisPoints);
+    const minBaseAmountOut = params.minimumOutputAmount ?? calculateWithSlippageSell(tokenAmount, slippageBasisPoints);
     data = Buffer.alloc(25);
     PUMPSWAP_BUY_EXACT_QUOTE_IN_DISCRIMINATOR.copy(data, 0);
     data.writeBigUInt64LE(inputAmount, 8);
@@ -643,6 +676,7 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
  * 100% port from Rust: src/instruction/pumpswap.rs build_sell_instructions
  */
 export function buildSellInstructions(params: BuildSellParams): TransactionInstruction[] {
+  validateMinimumOutput(params);
   const {
     payer,
     inputAmount,
@@ -674,7 +708,9 @@ export function buildSellInstructions(params: BuildSellParams): TransactionInstr
     isMayhemMode,
     isCashbackCoin,
   } = protocolParams;
-  effectiveQuoteReserves(poolQuoteTokenReserves, virtualQuoteReserves);
+  if (params.minimumOutputAmount === undefined) {
+    effectiveQuoteReserves(poolQuoteTokenReserves, virtualQuoteReserves);
+  }
 
   // Check if pool contains WSOL or USDC
   const isWsol = quoteMint.equals(WSOL_TOKEN_ACCOUNT) || baseMint.equals(WSOL_TOKEN_ACCOUNT);
@@ -688,13 +724,21 @@ export function buildSellInstructions(params: BuildSellParams): TransactionInstr
   const outputStableMint = quoteIsWsolOrUsdc ? quoteMint : baseMint;
   const outputStableTokenProgram = quoteIsWsolOrUsdc ? quoteTokenProgram : baseTokenProgram;
 
-  const feeBasisPoints = getEffectiveFeeBasisPoints(protocolParams);
+  const feeBasisPoints = params.minimumOutputAmount === undefined
+    ? getEffectiveFeeBasisPoints(protocolParams)
+    : legacyPumpSwapFeeBasisPoints(false);
 
   // Calculate trade amounts
   let tokenAmount: bigint;
   let solAmount: bigint;
 
-  if (quoteIsWsolOrUsdc) {
+  if (params.minimumOutputAmount !== undefined) {
+    if (!quoteIsWsolOrUsdc) {
+      throw new Error('minimumOutputAmount requires exact base-input sell');
+    }
+    tokenAmount = inputAmount;
+    solAmount = params.minimumOutputAmount;
+  } else if (quoteIsWsolOrUsdc) {
     // Selling base for quote (WSOL/USDC)
     tokenAmount = inputAmount;
     const result = sellBaseInputInternalWithFees(
