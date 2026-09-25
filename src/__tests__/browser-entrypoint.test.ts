@@ -22,23 +22,17 @@ describe('browser entrypoint', () => {
     const result = await browserBundle();
     const context = { TextEncoder, TextDecoder, Uint8Array, console };
     const exports = runInNewContext(`${result.outputFiles[0]!.text}\nTradeSdk`, context);
-    expect(Object.keys(exports).sort()).toEqual([
-      'bonk',
-      'calc',
-      'constants',
-      'meteoraDammV2',
-      'pumpfun',
-      'pumpswap',
-      'raydiumAmmV4',
-      'raydiumCpmm',
-      'splToken',
-    ]);
+    expect(exports.prepareTransactionVariants).toBeTypeOf('function');
+    expect(exports.sendPreparedTransactions).toBeTypeOf('function');
+    expect(exports.buildSwapTransaction).toBeTypeOf('function');
+    expect(exports.swqos.ClientFactory.createClient).toBeTypeOf('function');
     const mint = exports.constants.WSOL_TOKEN_ACCOUNT;
     expect(exports.pumpfun.getBondingCurvePda(mint).toBase58()).toMatch(/^[1-9A-HJ-NP-Za-km-z]+$/);
     expect(exports.pumpswap.closeWsol(mint).data[0]).toBe(9);
     const inputs = Object.keys(result.metafile!.inputs);
-    expect(inputs.some((path) => /src\/(rpc|swqos|trading|nonce|perf)\//.test(path))).toBe(false);
+    expect(inputs.some((path) => /src\/(rpc|trading|nonce|perf)\//.test(path))).toBe(false);
     expect(inputs.some((path) => path.includes('@grpc') || path.includes('@matrixai'))).toBe(false);
+    expect(inputs.some((path) => path.includes('tweetnacl') || (/\(disabled\):.*(?:crypto|net|tls|os)$/.test(path)))).toBe(false);
     expect('Buffer' in context).toBe(false);
     expect('process' in context).toBe(false);
   });

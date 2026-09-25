@@ -7,6 +7,7 @@
  * - Caching for performance
  */
 
+import { Buffer } from 'buffer';
 import { TransactionInstruction, PublicKey } from '@solana/web3.js';
 
 // ===== Constants =====

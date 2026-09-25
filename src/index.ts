@@ -19,7 +19,7 @@ import {
   SystemProgram,
   type SimulateTransactionConfig,
 } from '@solana/web3.js';
-import { cpus } from 'node:os';
+
 
 // Import GasFeeStrategy class for createGasFeeStrategy / TradeConfig.gasStrategy
 import {
@@ -64,7 +64,7 @@ import {
   buildMeteoraDammV2SellInstructions,
 } from './instruction/meteora_damm_v2_builder';
 import { handleWsol, closeWsol as wsolCloseIx } from './common/wsol-manager';
-import { computeBudgetInstructions } from './common/compute-budget';
+import { buildInstructionListWithGasAndTip, buildSignedVersionedTransaction } from './common/transaction';
 import { confirmAnyTransactionSignature } from './common/confirm-any-signature';
 import { InstructionProcessor, Prefetch } from './execution/execution';
 import type { SwqosClient as RuntimeSwqosClient } from './swqos/clients';
@@ -138,68 +138,8 @@ export const SellAmount = {
   }),
 } as const;
 
-/**
- * Trade operation type
- */
-export enum TradeType {
-  Buy = 'Buy',
-  Sell = 'Sell',
-}
-
-/**
- * SWQOS service regions
- */
-export enum SwqosRegion {
-  Frankfurt = 'Frankfurt',
-  NewYork = 'NewYork',
-  Amsterdam = 'Amsterdam',
-  Dublin = 'Dublin',
-  Tokyo = 'Tokyo',
-  Singapore = 'Singapore',
-  SLC = 'SLC',
-  London = 'London',
-  LosAngeles = 'LosAngeles',
-  Default = 'Default',
-}
-
-/**
- * SWQOS service types
- */
-export enum SwqosType {
-  Default = 'Default',
-  Jito = 'Jito',
-  Bloxroute = 'Bloxroute',
-  ZeroSlot = 'ZeroSlot',
-  Temporal = 'Temporal',
-  FlashBlock = 'FlashBlock',
-  BlockRazor = 'BlockRazor',
-  Node1 = 'Node1',
-  Astralane = 'Astralane',
-  NextBlock = 'NextBlock',
-  Helius = 'Helius',
-  Stellium = 'Stellium',
-  Lightspeed = 'Lightspeed',
-  Soyas = 'Soyas',
-  Speedlanding = 'Speedlanding',
-  Solami = 'Solami',
-  Triton = 'Triton',
-  QuickNode = 'QuickNode',
-  Syndica = 'Syndica',
-  Figment = 'Figment',
-  Alchemy = 'Alchemy',
-}
-
-export enum SwqosTransport {
-  Http = 'Http',
-  Grpc = 'Grpc',
-  Quic = 'Quic',
-}
-
-export enum AstralaneTransport {
-  Binary = 'Binary',
-  Plain = 'Plain',
-  Quic = 'Quic',
-}
+export { TradeType, SwqosRegion, SwqosType, SwqosTransport, AstralaneTransport, isSwqosTypeBlacklisted } from './enums';
+import { TradeType, SwqosRegion, SwqosType, SwqosTransport, AstralaneTransport, isSwqosTypeBlacklisted } from './enums';
 
 // ============== Interfaces ==============
 
@@ -215,14 +155,6 @@ export interface SwqosConfig {
   transport?: SwqosTransport;
   astralaneTransport?: AstralaneTransport;
   swqosOnly?: boolean;
-}
-
-const SWQOS_BLACKLISTED_TYPES = new Set<SwqosType>([
-  SwqosType.NextBlock,
-]);
-
-export function isSwqosTypeBlacklisted(type: SwqosType): boolean {
-  return SWQOS_BLACKLISTED_TYPES.has(type);
 }
 
 function normalizeSwqosConfigs(rpcUrl: string, configs: SwqosConfig[]): SwqosConfig[] {
@@ -1080,7 +1012,7 @@ export class TradeConfigBuilder {
 
 export function recommendedSenderThreadCoreIndices(
   swqosCount: number,
-  availableCores: number = cpus().length,
+  availableCores: number = (globalThis as { navigator?: { hardwareConcurrency?: number } }).navigator?.hardwareConcurrency ?? 1,
   fromEnd: boolean = true
 ): number[] {
   if (swqosCount <= 0 || availableCores <= 0) {
@@ -1341,7 +1273,7 @@ interface TxExecContext {
 
 /** Rust `async_executor`: `FAST_SUBMIT_RESULT_TIMEOUT` when `wait_transaction_confirmed` is false. */
 const SWQOS_SUBMIT_TIMEOUT_MS_WHEN_NO_CONFIRM = 5000;
-const PACKET_DATA_SIZE = 1232;
+
 
 /** Rust `executor::simulate_transaction` / `RpcSimulateTransactionConfig` (processed, inner ix, no sig verify). */
 export const RUST_PARITY_SIMULATE_CONFIG: SimulateTransactionConfig = {
@@ -1350,93 +1282,6 @@ export const RUST_PARITY_SIMULATE_CONFIG: SimulateTransactionConfig = {
   commitment: 'processed',
   innerInstructions: true,
 };
-
-/** Instruction order matches Rust `trading/common/transaction_builder.rs` `build_transaction`: nonce → tip → compute budget → business. */
-function buildInstructionListWithGasAndTip(
-  coreInstructions: TransactionInstruction[],
-  payer: PublicKey,
-  tradeType: TradeType,
-  gas: GasFeeStrategyConfig | undefined,
-  tipRecipient: PublicKey | null,
-  addTip: boolean
-): TransactionInstruction[] {
-  const isBuy = tradeType === TradeType.Buy;
-  const cuLimit = gas
-    ? isBuy
-      ? gas.buyComputeUnits
-      : gas.sellComputeUnits
-    : SDK_CONSTANTS.DEFAULT_COMPUTE_UNITS;
-  const cuPrice = BigInt(
-    gas
-      ? isBuy
-        ? gas.buyPriorityFee
-        : gas.sellPriorityFee
-      : SDK_CONSTANTS.DEFAULT_PRIORITY_FEE
-  );
-  const tipLamports = gas
-    ? isBuy
-      ? gas.buyTipLamports
-      : gas.sellTipLamports
-    : 0;
-
-  const out: TransactionInstruction[] = [];
-  if (addTip && tipRecipient && tipLamports > 0) {
-    out.push(
-      SystemProgram.transfer({
-        fromPubkey: payer,
-        toPubkey: tipRecipient,
-        lamports: tipLamports,
-      })
-    );
-  }
-  out.push(...computeBudgetInstructions(cuPrice, cuLimit));
-  return [...out, ...coreInstructions];
-}
-
-/**
- * Rust `trading/common/transaction_builder.rs` `build_versioned_transaction`:
- * always produce a v0 {@link VersionedTransaction} with optional LUT.
- */
-function buildSignedVersionedTransaction(
-  payer: Keypair,
-  instructions: TransactionInstruction[],
-  recentBlockhash: string,
-  addressLookupTableAccount?: AddressLookupTableAccount
-): VersionedTransaction {
-  const messageV0 = new TransactionMessage({
-    payerKey: payer.publicKey,
-    recentBlockhash,
-    instructions,
-  }).compileToV0Message(
-    addressLookupTableAccount != null ? [addressLookupTableAccount] : []
-  );
-  const tx = new VersionedTransaction(messageV0);
-  tx.sign([payer]);
-  let serializedLen: number;
-  try {
-    serializedLen = tx.serialize().length;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (
-      message.includes('encoding overruns') ||
-      message.toLowerCase().includes('too large')
-    ) {
-      throw new TradeError(
-        109,
-        `transaction too large: exceeds ${PACKET_DATA_SIZE}; SDK did not remove compute budget or relay tip because that changes transaction priority semantics. Use an address lookup table or pre-create token ATAs before submitting`,
-        error as Error
-      );
-    }
-    throw error;
-  }
-  if (serializedLen > PACKET_DATA_SIZE) {
-    throw new TradeError(
-      109,
-      `transaction too large: ${serializedLen} > ${PACKET_DATA_SIZE}; SDK did not remove compute budget or relay tip because that changes transaction priority semantics. Use an address lookup table or pre-create token ATAs before submitting`
-    );
-  }
-  return tx;
-}
 
 function mapSwqosToClientConfig(
   c: SwqosConfig,
@@ -2600,10 +2445,7 @@ export class TradingClient {
       }
     }
 
-    const nonDefaultSwqosTaskCount = swqosTasks.filter(
-      (task) => task.cfg.type !== SwqosType.Default
-    ).length;
-    if (nonDefaultSwqosTaskCount > 1 && !execCtx?.durableNonce) {
+    if (swqosTasks.length > 1 && !execCtx?.durableNonce) {
       return {
         success: false,
         signatures: [],
@@ -2644,12 +2486,25 @@ export class TradingClient {
       wired: TransactionInstruction[]
     ): TransactionInstruction[] => {
       const mgr = this._config.middlewareManager;
-      if (!mgr || execCtx?.dexType === undefined) return wired;
-      return mgr.applyMiddlewaresProcessFullInstructions(
+      const finalized = !mgr || execCtx?.dexType === undefined ? wired : mgr.applyMiddlewaresProcessFullInstructions(
         wired,
         String(execCtx.dexType),
         execCtx.tradeType === TradeType.Buy
       );
+      if (swqosTasks.length > 1) {
+        const nonce = execCtx?.durableNonce;
+        const expected = nonce?.nonceAccount ? SystemProgram.nonceAdvance({
+          noncePubkey: nonce.nonceAccount, authorizedPubkey: nonce.authority,
+        }) : undefined;
+        const first = finalized[0];
+        if (!expected || !first || !first.programId.equals(expected.programId) ||
+            !first.data.equals(expected.data) || first.keys.length !== expected.keys.length ||
+            first.keys.some((key, index) => !key.pubkey.equals(expected.keys[index]!.pubkey) ||
+              key.isSigner !== expected.keys[index]!.isSigner || key.isWritable !== expected.keys[index]!.isWritable)) {
+          throw new TradeError(104, 'Multiple SWQOS transactions require an unchanged first nonce advance instruction');
+        }
+      }
+      return finalized;
     };
 
     if (this._logEnabled && execCtx?.grpcRecvUs != null && typeof performance !== 'undefined') {
@@ -2729,26 +2584,20 @@ export class TradingClient {
       if (swqosMod) {
         const timings: SwqosTiming[] = [];
         const signatures: string[] = [];
-        const submitTask = async (task: SwqosGasTask): Promise<SwqosSubmitResult> => {
+        const prepared = swqosTasks.map((task) => {
+          const tipPk = withTip ? resolveTipRecipientPubkey(
+            swqosMod, [task.cfg], this._config.mevProtection,
+            this._config.rpcUrl, swqosClientForConfig
+          ) : null;
+          const tx = buildSignedVersionedTransaction(
+            this.payer, finalizeWiredForSign(buildWired(task.gas, tipPk, withTip)),
+            blockhash, lookupTableAccount
+          );
+          return { task, raw: Buffer.from(tx.serialize()), client: swqosClientForConfig!(task.cfg) };
+        });
+        const submitTask = async ({task, raw, client}: typeof prepared[number]): Promise<SwqosSubmitResult> => {
           const t0 = performance.now();
           try {
-            const tipPk = withTip
-              ? resolveTipRecipientPubkey(
-                  swqosMod,
-                  [task.cfg],
-                  this._config.mevProtection,
-                  this._config.rpcUrl,
-                  swqosClientForConfig
-                )
-              : null;
-            const tx = buildSignedVersionedTransaction(
-              this.payer,
-              finalizeWiredForSign(buildWired(task.gas, tipPk, withTip)),
-              blockhash,
-              lookupTableAccount
-            );
-            const raw = Buffer.from(tx.serialize());
-            const client = swqosClientForConfig!(task.cfg);
             const pending = client.sendTransaction(tradeType, raw, false);
             const sig = await (!waitConfirmed
               ? Promise.race([
@@ -2774,7 +2623,7 @@ export class TradingClient {
           }
         };
 
-        const submitPromises = swqosTasks.map((task) => submitTask(task));
+        const submitPromises = prepared.map((submission) => submitTask(submission));
         const waitForAllSubmits = execCtx?.waitForAllSubmits ?? false;
         const results = waitConfirmed || waitForAllSubmits
           ? await Promise.all(submitPromises)
@@ -2864,7 +2713,7 @@ export class TradingClient {
           signatures: [],
           error: new TradeError(
             109,
-            `transaction too large: exceeds ${PACKET_DATA_SIZE}; SDK did not remove compute budget or relay tip because that changes transaction priority semantics. Use an address lookup table or pre-create token ATAs before submitting`,
+            `transaction too large: exceeds 1232; SDK did not remove compute budget or relay tip because that changes transaction priority semantics. Use an address lookup table or pre-create token ATAs before submitting`,
             error as Error
           ),
           timings: [],
