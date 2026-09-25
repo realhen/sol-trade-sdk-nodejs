@@ -298,8 +298,6 @@ export interface PumpFunBuildBuyParams {
   closeInputMintAta?: boolean;
   protocolParams: PumpFunParams;
   useExactSolAmount?: boolean;
-  /** Override legacy buy volume tracking; omission preserves the cashback-coin default. V2 has no volume argument. */
-  trackVolume?: boolean;
 }
 
 export interface PumpFunBuildSellParams {
@@ -599,7 +597,7 @@ export function buildPumpFunBuyInstructions(
   const bondingCurveV2 = getBondingCurveV2Pda(outputMint);
 
   // Track volume for cashback coins
-  const trackVolume = (params.trackVolume ?? bondingCurve.isCashbackCoin) ? 1 : 0;
+  const trackVolume = bondingCurve.isCashbackCoin ? 1 : 0;
 
   const buyTokenAmount = fixedOutputAmount
     ? fixedOutputAmount
