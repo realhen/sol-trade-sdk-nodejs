@@ -1,3 +1,4 @@
+import { Buffer } from 'buffer';
 /**
  * SPL Token utilities for Sol Trade SDK
  * Provides token account management, mint operations, and instruction building.

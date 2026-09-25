@@ -1,3 +1,4 @@
+import { Buffer } from 'buffer';
 /**
  * PumpSwap instruction builder - Production-grade implementation
  * 100% port from Rust sol-trade-sdk
