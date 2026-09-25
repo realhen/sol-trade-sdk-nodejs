@@ -10,11 +10,10 @@ import {
   SwqosRegion,
   TradeType,
   isSwqosTypeBlacklisted,
-} from '../index';
+} from '../enums';
 import { TradeError } from '../sdk-errors';
 import bs58 from 'bs58';
-import * as grpc from '@grpc/grpc-js';
-import { Reader, Writer } from 'protobufjs/minimal';
+import { Buffer } from 'buffer';
 
 // ===== Utility =====
 
@@ -56,7 +55,6 @@ function extractSubmitSignature(
   if (typeof result === 'string') {
     const signature = result.trim();
     if (signature) return signature;
-    if (allowFallback && fallbackSignature) return fallbackSignature;
     throw new TradeError(500, 'missing transaction signature in submit response');
   }
   if (Array.isArray(result) && result.length > 0) {
@@ -64,15 +62,15 @@ function extractSubmitSignature(
   }
   if (result && typeof result === 'object') {
     const obj = result as Record<string, any>;
+    if (obj.success === false) throw new TradeError(502, 'Provider rejected transaction');
     if (obj.error) {
       throw new TradeError(obj.error.code || 500, obj.error.message || String(obj.error));
     }
     if (typeof obj.signature === 'string' && obj.signature) return obj.signature;
     if (typeof obj.result === 'string' && obj.result) return obj.result;
     if (obj.result) return extractSubmitSignature(obj.result, fallbackSignature, allowFallback);
-    if (obj.success === true && fallbackSignature) return fallbackSignature;
+    if (allowFallback && obj.success === true && fallbackSignature) return fallbackSignature;
   }
-  if (allowFallback && fallbackSignature) return fallbackSignature;
   throw new TradeError(500, 'missing transaction signature in submit response');
 }
 
@@ -378,18 +376,6 @@ export const BLOCK_RAZOR_ENDPOINTS: Record<SwqosRegion, string> = {
   [SwqosRegion.Default]: 'http://frankfurt.solana.blockrazor.xyz:443/sendTransaction',
 };
 
-export const BLOCK_RAZOR_GRPC_ENDPOINTS: Record<SwqosRegion, string> = {
-  [SwqosRegion.NewYork]: 'newyork.solana-grpc.blockrazor.xyz:80',
-  [SwqosRegion.Frankfurt]: 'frankfurt.solana-grpc.blockrazor.xyz:80',
-  [SwqosRegion.Amsterdam]: 'amsterdam.solana-grpc.blockrazor.xyz:80',
-  [SwqosRegion.Dublin]: 'london.solana-grpc.blockrazor.xyz:80',
-  [SwqosRegion.SLC]: 'newyork.solana-grpc.blockrazor.xyz:80',
-  [SwqosRegion.Tokyo]: 'tokyo.solana-grpc.blockrazor.xyz:80',
-  [SwqosRegion.London]: 'london.solana-grpc.blockrazor.xyz:80',
-  [SwqosRegion.LosAngeles]: 'losangeles.solana-grpc.blockrazor.xyz:80',
-  [SwqosRegion.Singapore]: 'singapore.solana-grpc.blockrazor.xyz:80',
-  [SwqosRegion.Default]: 'frankfurt.solana-grpc.blockrazor.xyz:80',
-};
 
 export const ASTRALANE_ENDPOINTS: Record<SwqosRegion, string> = {
   [SwqosRegion.NewYork]: 'http://ny.gateway.astralane.io/irisb',
@@ -484,17 +470,27 @@ export const SOLAMI_ENDPOINTS: Record<SwqosRegion, string> = {
 
 // ===== SWQOS Client Interface =====
 
+/** Options are local to one submission and never mutate the client. */
+export interface HttpSendOptions {
+  minContextSlot?: number;
+  headers?: Record<string, string>;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
 export interface SwqosClient {
   sendTransaction(
     tradeType: TradeType,
     transaction: Buffer,
-    waitConfirmation: boolean
+    waitConfirmation: boolean,
+    options?: HttpSendOptions
   ): Promise<string>;
 
   sendTransactions(
     tradeType: TradeType,
     transactions: Buffer[],
-    waitConfirmation: boolean
+    waitConfirmation: boolean,
+    options?: HttpSendOptions
   ): Promise<string[]>;
 
   getTipAccount(): string;
@@ -511,37 +507,48 @@ abstract class BaseClient implements SwqosClient {
   abstract sendTransaction(
     tradeType: TradeType,
     transaction: Buffer,
-    waitConfirmation: boolean
+    waitConfirmation: boolean,
+    options?: HttpSendOptions
   ): Promise<string>;
 
   async sendTransactions(
     tradeType: TradeType,
     transactions: Buffer[],
-    waitConfirmation: boolean
+    waitConfirmation: boolean,
+    options?: HttpSendOptions
   ): Promise<string[]> {
     const signatures: string[] = [];
     for (const tx of transactions) {
-      const sig = await this.sendTransaction(tradeType, tx, waitConfirmation);
+      const sig = await this.sendTransaction(tradeType, tx, waitConfirmation, options);
       signatures.push(sig);
     }
     return signatures;
   }
 
-  protected async post(url: string, payload: unknown, headers: Record<string, string> = {}): Promise<unknown> {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...headers,
-      },
-      body: JSON.stringify(payload),
-    });
-
-    if (!response.ok) {
-      throw new TradeError(response.status, `HTTP error: ${response.statusText}`);
+  protected async post(url: string, payload: unknown, headers: Record<string, string> = {}, options?: HttpSendOptions): Promise<unknown> {
+    // Only Solana JSON-RPC sendTransaction accepts these config fields.
+    const rpc = payload as { method?: string; params?: unknown[] };
+    if (rpc?.method === 'sendTransaction' && Array.isArray(rpc.params)) {
+      payload = { ...rpc, params: [rpc.params[0], {
+        ...(rpc.params[1] as Record<string, unknown> | undefined),
+        encoding: 'base64', skipPreflight: true, maxRetries: 0,
+        ...(options?.minContextSlot === undefined ? {} : { minContextSlot: options.minContextSlot }),
+      }] };
     }
-
-    return parseBodyAsJsonOrText(response);
+    const response = await this.postRaw(url, JSON.stringify(payload), headers, 'application/json', options);
+    if (options && rpc?.method === 'sendTransaction' && Array.isArray(rpc.params)) {
+      const envelope = response as Record<string, unknown> | null;
+      if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope) ||
+          envelope.jsonrpc !== '2.0' || envelope.id !== (payload as { id?: unknown }).id ||
+          (Object.prototype.hasOwnProperty.call(envelope, 'result') === Object.prototype.hasOwnProperty.call(envelope, 'error'))) {
+        throw new TradeError(502, 'Invalid JSON-RPC submission response');
+      }
+      if (Object.prototype.hasOwnProperty.call(envelope, 'error')) {
+        const error = envelope.error as { code?: number; message?: string } | null;
+        throw new TradeError(error?.code ?? 502, error?.message || 'JSON-RPC submission failed');
+      }
+    }
+    return response;
   }
 
   protected async postRaw(
@@ -549,71 +556,43 @@ abstract class BaseClient implements SwqosClient {
     body: string | Buffer | Uint8Array,
     headers: Record<string, string> = {},
     contentType = 'text/plain',
+    options: HttpSendOptions = {},
   ): Promise<unknown> {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': contentType,
-        ...headers,
-      },
-      body,
-    });
-
-    if (!response.ok) {
-      throw new TradeError(response.status, `HTTP error: ${response.statusText}`);
+    const controller = new AbortController();
+    const timeoutMs = options.timeoutMs ?? 8000;
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new TradeError(400, 'HTTP timeout must be positive');
+    const abort = () => controller.abort(options.signal?.reason);
+    if (options.signal?.aborted) abort();
+    else options.signal?.addEventListener('abort', abort, { once: true });
+    const timer = setTimeout(() => controller.abort(new Error('HTTP submission timed out')), timeoutMs);
+    try {
+      const request = {
+        method: 'POST',
+        headers: { 'Content-Type': contentType, ...headers, ...options.headers },
+        body,
+        signal: controller.signal,
+        redirect: 'error' as const,
+        credentials: 'omit' as const,
+        referrerPolicy: 'no-referrer' as const,
+        cache: 'no-store' as const,
+      };
+      const response = await fetch(url, request);
+      if (!response.ok) throw new TradeError(response.status, `HTTP error: ${response.statusText}`);
+      return await parseBodyAsJsonOrText(response);
+    } finally {
+      clearTimeout(timer);
+      options.signal?.removeEventListener('abort', abort);
     }
-
-    return parseBodyAsJsonOrText(response);
   }
 }
 
-function shouldFallbackTransport(error: unknown): boolean {
-  if (error instanceof TradeError) {
-    return error.code >= 500 || error.code === 408 || error.code === 425;
-  }
-  const grpcCode = (error as { code?: number } | undefined)?.code;
-  if (typeof grpcCode === 'number') {
-    return [grpc.status.UNAVAILABLE, grpc.status.DEADLINE_EXCEEDED, grpc.status.INTERNAL].includes(grpcCode);
-  }
-  if (error instanceof TypeError) return true;
-  const value = error as { code?: unknown; cause?: unknown } | undefined;
-  const networkCodes = new Set([
-    'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH',
-    'EPIPE', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET',
-  ]);
-  if (typeof value?.code === 'string' && networkCodes.has(value.code)) return true;
-  return value?.cause !== undefined && value.cause !== error
-    ? shouldFallbackTransport(value.cause)
-    : false;
-}
-
-export class FallbackSwqosClient implements SwqosClient {
-  constructor(
-    readonly primary: SwqosClient,
-    readonly fallback: SwqosClient,
-  ) {}
-
-  async sendTransaction(tradeType: TradeType, transaction: Buffer, waitConfirmation: boolean): Promise<string> {
-    try {
-      return await this.primary.sendTransaction(tradeType, transaction, waitConfirmation);
-    } catch (error) {
-      if (!shouldFallbackTransport(error)) throw error;
-      return this.fallback.sendTransaction(tradeType, transaction, waitConfirmation);
-    }
-  }
-
-  async sendTransactions(tradeType: TradeType, transactions: Buffer[], waitConfirmation: boolean): Promise<string[]> {
-    try {
-      return await this.primary.sendTransactions(tradeType, transactions, waitConfirmation);
-    } catch (error) {
-      if (!shouldFallbackTransport(error)) throw error;
-      return this.fallback.sendTransactions(tradeType, transactions, waitConfirmation);
-    }
-  }
-
-  getTipAccount(): string { return this.primary.getTipAccount(); }
-  getSwqosType(): SwqosType { return this.primary.getSwqosType(); }
-  minTipSol(): number { return this.primary.minTipSol(); }
+function jitoUrl(endpoint: string, method: 'transactions' | 'bundles'): string {
+  const url = new URL(endpoint);
+  const path = url.pathname.replace(/\/$/, '');
+  url.pathname = /\/api\/v1\/(transactions|bundles)$/.test(path)
+    ? path.replace(/(transactions|bundles)$/, method)
+    : `${path}/api/v1/${method}`;
+  return url.toString();
 }
 
 // ===== Jito Client =====
@@ -632,7 +611,8 @@ export class JitoClient extends BaseClient {
   async sendTransaction(
     tradeType: TradeType,
     transaction: Buffer,
-    waitConfirmation: boolean
+    waitConfirmation: boolean,
+    options?: HttpSendOptions
   ): Promise<string> {
     const encoded = transaction.toString('base64');
 
@@ -647,13 +627,13 @@ export class JitoClient extends BaseClient {
     };
 
     const headers: Record<string, string> = {};
-    let url = `${this.endpoint}/api/v1/transactions`;
+    let url = jitoUrl(this.endpoint, 'transactions');
     if (this.authToken) {
       headers['x-jito-auth'] = this.authToken;
-      url = `${this.endpoint}/api/v1/transactions?uuid=${this.authToken}`;
+      url = appendQuery(url, { uuid: this.authToken });
     }
 
-    const result = (await this.post(url, payload, headers)) as any;
+    const result = (await this.post(url, payload, headers, options)) as any;
 
     if (result.error) {
       throw new TradeError(result.error.code || 500, result.error.message);
@@ -665,12 +645,13 @@ export class JitoClient extends BaseClient {
   async sendTransactions(
     tradeType: TradeType,
     transactions: Buffer[],
-    waitConfirmation: boolean
+    waitConfirmation: boolean,
+    options?: HttpSendOptions
   ): Promise<string[]> {
     if (transactions.length === 0) return [];
     if (transactions.length === 1) {
       const tx = transactions[0]!;
-      return [await this.sendTransaction(tradeType, tx, waitConfirmation)];
+      return [await this.sendTransaction(tradeType, tx, waitConfirmation, options)];
     }
 
     const encodedTxs = transactions.map(tx => tx.toString('base64'));
@@ -683,13 +664,13 @@ export class JitoClient extends BaseClient {
     };
 
     const headers: Record<string, string> = {};
-    let url = `${this.endpoint}/api/v1/bundles`;
+    let url = jitoUrl(this.endpoint, 'bundles');
     if (this.authToken) {
       headers['x-jito-auth'] = this.authToken;
-      url = `${this.endpoint}/api/v1/bundles?uuid=${this.authToken}`;
+      url = appendQuery(url, { uuid: this.authToken });
     }
 
-    const result = (await this.post(url, payload, headers)) as any;
+    const result = (await this.post(url, payload, headers, options)) as any;
 
     if (result.error) {
       throw new TradeError(result.error.code || 500, result.error.message);
@@ -728,7 +709,8 @@ export class BloxrouteClient extends BaseClient {
   async sendTransaction(
     tradeType: TradeType,
     transaction: Buffer,
-    waitConfirmation: boolean
+    waitConfirmation: boolean,
+    options?: HttpSendOptions
   ): Promise<string> {
     const encoded = transaction.toString('base64');
 
@@ -744,7 +726,7 @@ export class BloxrouteClient extends BaseClient {
     }
 
     const url = `${this.endpoint}/api/v2/submit`;
-    const result = (await this.post(url, payload, headers)) as any;
+    const result = (await this.post(url, payload, headers, options)) as any;
 
     if (result.error) {
       throw new TradeError(result.error.code || 500, result.error.message || result.error);
@@ -785,7 +767,8 @@ export class ZeroSlotClient extends BaseClient {
   async sendTransaction(
     tradeType: TradeType,
     transaction: Buffer,
-    waitConfirmation: boolean
+    waitConfirmation: boolean,
+    options?: HttpSendOptions
   ): Promise<string> {
     const encoded = transaction.toString('base64');
 
@@ -802,7 +785,7 @@ export class ZeroSlotClient extends BaseClient {
       url = `${this.endpoint}?api-key=${this.authToken}`;
     }
 
-    const result = (await this.post(url, payload)) as any;
+    const result = (await this.post(url, payload, {}, options)) as any;
 
     if (result.error) {
       throw new TradeError(result.error.code || 500, result.error.message || String(result.error));
@@ -864,44 +847,6 @@ function temporalBatchUrl(endpoint: string, authToken?: string, forceTls = false
   return url.toString();
 }
 
-async function postTemporalHttp3(url: string, body: Buffer): Promise<void> {
-  let quico: typeof import('quico')['default'];
-  try {
-    ({ default: quico } = await import('quico'));
-  } catch (error) {
-    throw new TradeError(501, 'Temporal QUIC/HTTP3 is unavailable in this runtime', error as Error);
-  }
-  await new Promise<void>((resolve, reject) => {
-    const request = quico.request(url, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/octet-stream',
-        'content-length': String(body.length),
-      },
-      timeout: 3000,
-    }, response => {
-      const chunks: Buffer[] = [];
-      response.on('data', chunk => chunks.push(Buffer.from(chunk)));
-      response.on('end', () => {
-        const status = response.statusCode ?? 500;
-        if (status >= 200 && status < 300) {
-          resolve();
-        } else {
-          reject(new TradeError(status, `Temporal HTTP/3 error: ${Buffer.concat(chunks).toString() || status}`));
-        }
-      });
-    });
-    request.on('timeout', () => {
-      request.abort();
-      reject(new TradeError(408, 'Temporal HTTP/3 request timed out'));
-    });
-    request.on('error', error => {
-      reject(new TradeError(503, `Temporal HTTP/3 transport error: ${error.message}`, error));
-    });
-    request.end(body);
-  });
-}
-
 export class TemporalClient extends BaseClient {
   private tipAccounts = TEMPORAL_TIP_ACCOUNTS;
 
@@ -916,7 +861,8 @@ export class TemporalClient extends BaseClient {
   async sendTransaction(
     tradeType: TradeType,
     transaction: Buffer,
-    waitConfirmation: boolean
+    waitConfirmation: boolean,
+    options?: HttpSendOptions
   ): Promise<string> {
     const body = encodeTemporalBatch([transaction]);
     await this.postRaw(
@@ -924,15 +870,16 @@ export class TemporalClient extends BaseClient {
       body,
       {},
       'application/octet-stream',
+      options,
     );
     return signatureFromSerializedTransaction(transaction);
   }
 
-  override async sendTransactions(tradeType: TradeType, transactions: Buffer[], waitConfirmation: boolean): Promise<string[]> {
+  override async sendTransactions(tradeType: TradeType, transactions: Buffer[], waitConfirmation: boolean, options?: HttpSendOptions): Promise<string[]> {
     const signatures: string[] = [];
     for (let start = 0; start < transactions.length; start += TEMPORAL_MAX_BATCH_SIZE) {
       const batch = transactions.slice(start, start + TEMPORAL_MAX_BATCH_SIZE);
-      await this.postRaw(temporalBatchUrl(this.endpoint, this.authToken), encodeTemporalBatch(batch), {}, 'application/octet-stream');
+      await this.postRaw(temporalBatchUrl(this.endpoint, this.authToken), encodeTemporalBatch(batch), {}, 'application/octet-stream', options);
       signatures.push(...batch.map(signatureFromSerializedTransaction));
     }
     return signatures;
@@ -951,37 +898,6 @@ export class TemporalClient extends BaseClient {
   }
 }
 
-export class TemporalQuicClient extends BaseClient {
-  private readonly tipAccounts = TEMPORAL_TIP_ACCOUNTS;
-
-  constructor(
-    private readonly rpcUrl: string,
-    private readonly endpoint: string,
-    private readonly authToken?: string,
-  ) {
-    super();
-  }
-
-  async sendTransaction(tradeType: TradeType, transaction: Buffer, waitConfirmation: boolean): Promise<string> {
-    await postTemporalHttp3(temporalBatchUrl(this.endpoint, this.authToken, true), encodeTemporalBatch([transaction]));
-    return signatureFromSerializedTransaction(transaction);
-  }
-
-  override async sendTransactions(tradeType: TradeType, transactions: Buffer[], waitConfirmation: boolean): Promise<string[]> {
-    const signatures: string[] = [];
-    for (let start = 0; start < transactions.length; start += TEMPORAL_MAX_BATCH_SIZE) {
-      const batch = transactions.slice(start, start + TEMPORAL_MAX_BATCH_SIZE);
-      await postTemporalHttp3(temporalBatchUrl(this.endpoint, this.authToken, true), encodeTemporalBatch(batch));
-      signatures.push(...batch.map(signatureFromSerializedTransaction));
-    }
-    return signatures;
-  }
-
-  getTipAccount(): string { return randomChoice(this.tipAccounts); }
-  getSwqosType(): SwqosType { return SwqosType.Temporal; }
-  minTipSol(): number { return MIN_TIP_TEMPORAL; }
-}
-
 // ===== FlashBlock Client =====
 
 export class FlashBlockClient extends BaseClient {
@@ -998,7 +914,8 @@ export class FlashBlockClient extends BaseClient {
   async sendTransaction(
     tradeType: TradeType,
     transaction: Buffer,
-    waitConfirmation: boolean
+    waitConfirmation: boolean,
+    options?: HttpSendOptions
   ): Promise<string> {
     const encoded = transaction.toString('base64');
 
@@ -1012,7 +929,7 @@ export class FlashBlockClient extends BaseClient {
     }
 
     const url = `${this.endpoint}/api/v2/submit-batch`;
-    const result = (await this.post(url, payload, headers)) as any;
+    const result = (await this.post(url, payload, headers, options)) as any;
 
     if (result.error) {
       throw new TradeError(result.error.code || 500, result.error.message || String(result.error));
@@ -1056,7 +973,8 @@ export class HeliusClient extends BaseClient {
   async sendTransaction(
     tradeType: TradeType,
     transaction: Buffer,
-    waitConfirmation: boolean
+    waitConfirmation: boolean,
+    options?: HttpSendOptions
   ): Promise<string> {
     const encoded = transaction.toString('base64');
 
@@ -1079,7 +997,7 @@ export class HeliusClient extends BaseClient {
       swqos_only: this.swqosOnly ? true : undefined,
     });
 
-    const result = (await this.post(url, payload)) as any;
+    const result = (await this.post(url, payload, {}, options)) as any;
 
     if (result.error) {
       throw new TradeError(result.error.code || 500, result.error.message);
@@ -1117,7 +1035,8 @@ export class Node1Client extends BaseClient {
   async sendTransaction(
     tradeType: TradeType,
     transaction: Buffer,
-    waitConfirmation: boolean
+    waitConfirmation: boolean,
+    options?: HttpSendOptions
   ): Promise<string> {
     const encoded = transaction.toString('base64');
 
@@ -1135,7 +1054,7 @@ export class Node1Client extends BaseClient {
     }
 
     // endpoint is the full URL (e.g., http://ny.node1.me)
-    const result = (await this.post(this.endpoint, payload, headers)) as any;
+    const result = (await this.post(this.endpoint, payload, headers, options)) as any;
 
     if (result.error) {
       throw new TradeError(result.error.code || 500, result.error.message || String(result.error));
@@ -1157,106 +1076,6 @@ export class Node1Client extends BaseClient {
   }
 }
 
-export class Node1QuicClient implements SwqosClient {
-  private readonly tipAccounts = NODE1_TIP_ACCOUNTS;
-  private readonly host: string;
-  private readonly port: number;
-
-  constructor(
-    private readonly rpcUrl: string,
-    private readonly endpoint: string,
-    private readonly authToken: string,
-  ) {
-    const lastColon = endpoint.lastIndexOf(':');
-    this.host = lastColon >= 0 ? endpoint.slice(0, lastColon) : endpoint;
-    this.port = lastColon >= 0 ? parseInt(endpoint.slice(lastColon + 1), 10) : 16666;
-  }
-
-  async sendTransaction(
-    tradeType: TradeType,
-    transaction: Buffer,
-    waitConfirmation: boolean
-  ): Promise<string> {
-    await sendNode1ViaQUIC(this.host, this.port, this.authToken, new Uint8Array(transaction));
-    return signatureFromSerializedTransaction(transaction);
-  }
-
-  async sendTransactions(
-    tradeType: TradeType,
-    transactions: Buffer[],
-    waitConfirmation: boolean
-  ): Promise<string[]> {
-    const signatures: string[] = [];
-    for (const tx of transactions) {
-      signatures.push(await this.sendTransaction(tradeType, tx, waitConfirmation));
-    }
-    return signatures;
-  }
-
-  getTipAccount(): string {
-    return randomChoice(this.tipAccounts);
-  }
-
-  getSwqosType(): SwqosType {
-    return SwqosType.Node1;
-  }
-
-  minTipSol(): number {
-    return MIN_TIP_NODE1;
-  }
-}
-
-// ===== BlockRazor Client =====
-
-interface BlockRazorBinaryRequest {
-  binaryTransaction: Buffer;
-  mode: string;
-  safeWindow: number;
-  revertProtection: boolean;
-}
-
-function serializeBlockRazorBinaryRequest(value: BlockRazorBinaryRequest): Buffer {
-  const writer = Writer.create()
-    .uint32(10).bytes(value.binaryTransaction)
-    .uint32(18).string(value.mode)
-    .uint32(24).int32(value.safeWindow);
-  if (value.revertProtection) writer.uint32(32).bool(true);
-  return Buffer.from(writer.finish());
-}
-
-function deserializeBlockRazorResponse(buffer: Buffer): { signature: string } {
-  const reader = Reader.create(buffer);
-  let signature = '';
-  while (reader.pos < reader.len) {
-    const tag = reader.uint32();
-    if ((tag >>> 3) === 1) signature = reader.string();
-    else reader.skipType(tag & 7);
-  }
-  return { signature };
-}
-
-const blockRazorGrpcDefinition = {
-  sendBinaryTransaction: {
-    path: '/serverpb.Server/SendBinaryTransaction',
-    requestStream: false,
-    responseStream: false,
-    requestSerialize: serializeBlockRazorBinaryRequest,
-    requestDeserialize: () => { throw new Error('client-only method'); },
-    responseSerialize: () => { throw new Error('client-only method'); },
-    responseDeserialize: deserializeBlockRazorResponse,
-    originalName: 'SendBinaryTransaction',
-  },
-} satisfies grpc.ServiceDefinition;
-
-type BlockRazorGrpcStub = grpc.Client & {
-  sendBinaryTransaction(
-    request: BlockRazorBinaryRequest,
-    metadata: grpc.Metadata,
-    options: grpc.CallOptions,
-    callback: (error: grpc.ServiceError | null, response: { signature: string }) => void,
-  ): grpc.ClientUnaryCall;
-};
-
 export class BlockRazorClient extends BaseClient {
   private tipAccounts = BLOCK_RAZOR_TIP_ACCOUNTS;
 
@@ -1272,7 +1091,8 @@ export class BlockRazorClient extends BaseClient {
   async sendTransaction(
     tradeType: TradeType,
     transaction: Buffer,
-    waitConfirmation: boolean
+    waitConfirmation: boolean,
+    options?: HttpSendOptions
   ): Promise<string> {
     const mode = this.mevProtection ? 'sandwichMitigation' : 'fast';
     const headers: Record<string, string> = {};
@@ -1282,7 +1102,7 @@ export class BlockRazorClient extends BaseClient {
       mode,
       safeWindow: 3,
       revertProtection: false,
-    }, headers);
+    }, headers, options);
     return extractSubmitSignature(result, signatureFromSerializedTransaction(transaction), true);
   }
 
@@ -1297,62 +1117,6 @@ export class BlockRazorClient extends BaseClient {
   minTipSol(): number {
     return MIN_TIP_BLOCK_RAZOR;
   }
-}
-
-export class BlockRazorGrpcClient extends BaseClient {
-  private readonly tipAccounts = BLOCK_RAZOR_TIP_ACCOUNTS;
-  private readonly client: BlockRazorGrpcStub;
-
-  constructor(
-    private readonly rpcUrl: string,
-    endpoint: string,
-    private readonly authToken?: string,
-    private readonly mevProtection = false,
-  ) {
-    super();
-    const ClientConstructor = grpc.makeGenericClientConstructor(blockRazorGrpcDefinition, 'Server') as unknown as new (
-      address: string,
-      credentials: grpc.ChannelCredentials,
-      options?: grpc.ClientOptions,
-    ) => BlockRazorGrpcStub;
-    const target = endpoint.replace(/^https?:\/\//, '');
-    this.client = new ClientConstructor(target, grpc.credentials.createInsecure(), {
-      'grpc.keepalive_time_ms': 30_000,
-      'grpc.keepalive_timeout_ms': 3_000,
-    });
-  }
-
-  async sendTransaction(tradeType: TradeType, transaction: Buffer, waitConfirmation: boolean): Promise<string> {
-    const metadata = new grpc.Metadata();
-    if (this.authToken) metadata.set('apikey', this.authToken);
-    const mode = this.mevProtection ? 'sandwichMitigation' : 'fast';
-    return new Promise<string>((resolve, reject) => {
-      this.client.sendBinaryTransaction({
-        binaryTransaction: transaction,
-        mode,
-        safeWindow: 3,
-        revertProtection: false,
-      }, metadata, { deadline: Date.now() + 3000 }, (error, response) => {
-        if (error) {
-          if (error.code === grpc.status.UNAUTHENTICATED) reject(new TradeError(401, error.message, error));
-          else if (error.code === grpc.status.PERMISSION_DENIED) reject(new TradeError(403, error.message, error));
-          else if (error.code === grpc.status.INVALID_ARGUMENT) reject(new TradeError(400, error.message, error));
-          else if (error.code === grpc.status.RESOURCE_EXHAUSTED) reject(new TradeError(429, error.message, error));
-          else reject(error);
-          return;
-        }
-        try {
-          resolve(extractSubmitSignature(response));
-        } catch (parseError) {
-          reject(parseError);
-        }
-      });
-    });
-  }
-
-  getTipAccount(): string { return randomChoice(this.tipAccounts); }
-  getSwqosType(): SwqosType { return SwqosType.BlockRazor; }
-  minTipSol(): number { return MIN_TIP_BLOCK_RAZOR; }
 }
 
 // ===== Astralane Client =====
@@ -1371,7 +1135,8 @@ export class AstralaneClient extends BaseClient {
   async sendTransaction(
     tradeType: TradeType,
     transaction: Buffer,
-    waitConfirmation: boolean
+    waitConfirmation: boolean,
+    options?: HttpSendOptions
   ): Promise<string> {
     const query: Record<string, string | undefined> = { method: 'sendTransaction' };
     if (this.authToken) query['api-key'] = this.authToken;
@@ -1382,81 +1147,10 @@ export class AstralaneClient extends BaseClient {
       transaction,
       {},
       'application/octet-stream',
+      options,
     );
 
     return extractSubmitSignature(result, signatureFromSerializedTransaction(transaction), true);
-  }
-
-  getTipAccount(): string {
-    return randomChoice(this.tipAccounts);
-  }
-
-  getSwqosType(): SwqosType {
-    return SwqosType.Astralane;
-  }
-
-  minTipSol(): number {
-    return MIN_TIP_ASTRALANE;
-  }
-}
-
-export class AstralaneQuicClient implements SwqosClient {
-  private readonly tipAccounts = ASTRALANE_TIP_ACCOUNTS;
-  private readonly host: string;
-  private readonly port: number;
-  private readonly sender: PersistentQuicSender;
-
-  constructor(
-    private readonly rpcUrl: string,
-    private readonly endpoint: string,
-    private readonly authToken: string,
-  ) {
-    const lastColon = endpoint.lastIndexOf(':');
-    this.host = lastColon >= 0 ? endpoint.slice(0, lastColon) : endpoint;
-    this.port = lastColon >= 0 ? parseInt(endpoint.slice(lastColon + 1), 10) : 7000;
-    this.sender = new PersistentQuicSender(this.host, this.port, 'astralane', {
-      alpn: 'astralane-tpu',
-      commonName: this.authToken,
-      algorithm: 'ecdsa',
-    });
-  }
-
-  async sendTransaction(
-    tradeType: TradeType,
-    transaction: Buffer,
-    waitConfirmation: boolean
-  ): Promise<string> {
-    if (transaction.length > 1232) {
-      throw new TradeError(400, `Astralane QUIC transaction too large: ${transaction.length} > 1232`);
-    }
-    try {
-      await this.sender.send(new Uint8Array(transaction));
-    } catch (error) {
-      if (error instanceof TradeError) throw error;
-      const value = error as { errorCode?: unknown; applicationCode?: unknown } | undefined;
-      const applicationCode = value?.applicationCode ?? value?.errorCode;
-      if (applicationCode === 1 || applicationCode === 1n) {
-        throw new TradeError(401, 'Astralane QUIC rejected the API key', error as Error);
-      }
-      if (applicationCode === 2 || applicationCode === 2n) {
-        throw new TradeError(429, 'Astralane QUIC connection limit exceeded', error as Error);
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      throw new TradeError(503, `Astralane QUIC transport error: ${message}`, error as Error);
-    }
-    return signatureFromSerializedTransaction(transaction);
-  }
-
-  async sendTransactions(
-    tradeType: TradeType,
-    transactions: Buffer[],
-    waitConfirmation: boolean
-  ): Promise<string[]> {
-    const signatures: string[] = [];
-    for (const tx of transactions) {
-      signatures.push(await this.sendTransaction(tradeType, tx, waitConfirmation));
-    }
-    return signatures;
   }
 
   getTipAccount(): string {
@@ -1488,7 +1182,8 @@ export class StelliumClient extends BaseClient {
   async sendTransaction(
     tradeType: TradeType,
     transaction: Buffer,
-    waitConfirmation: boolean
+    waitConfirmation: boolean,
+    options?: HttpSendOptions
   ): Promise<string> {
     const encoded = transaction.toString('base64');
 
@@ -1505,7 +1200,7 @@ export class StelliumClient extends BaseClient {
       url = `${this.endpoint}/${this.authToken}`;
     }
 
-    const result = (await this.post(url, payload)) as any;
+    const result = (await this.post(url, payload, {}, options)) as any;
 
     if (result.error) {
       throw new TradeError(result.error.code || 500, result.error.message || String(result.error));
@@ -1540,7 +1235,8 @@ export class LightspeedClient extends BaseClient {
   async sendTransaction(
     tradeType: TradeType,
     transaction: Buffer,
-    waitConfirmation: boolean
+    waitConfirmation: boolean,
+    options?: HttpSendOptions
   ): Promise<string> {
     const encoded = transaction.toString('base64');
 
@@ -1560,7 +1256,7 @@ export class LightspeedClient extends BaseClient {
     };
 
     // customUrl already contains api_key in its format
-    const result = (await this.post(this.customUrl, payload)) as any;
+    const result = (await this.post(this.customUrl, payload, {}, options)) as any;
 
     if (result.error) {
       throw new TradeError(result.error.code || 500, result.error.message || String(result.error));
@@ -1603,7 +1299,8 @@ export class NextBlockClient extends BaseClient {
   async sendTransaction(
     tradeType: TradeType,
     transaction: Buffer,
-    waitConfirmation: boolean
+    waitConfirmation: boolean,
+    options?: HttpSendOptions
   ): Promise<string> {
     const encoded = transaction.toString('base64');
 
@@ -1618,7 +1315,7 @@ export class NextBlockClient extends BaseClient {
     }
 
     const url = `${this.endpoint}/api/v2/submit`;
-    const result = (await this.post(url, payload, headers)) as any;
+    const result = (await this.post(url, payload, headers, options)) as any;
 
     if (result.error) {
       throw new TradeError(result.error.code || 500, result.error.message || String(result.error));
@@ -1653,7 +1350,8 @@ export class DefaultClient extends BaseClient {
   async sendTransaction(
     tradeType: TradeType,
     transaction: Buffer,
-    waitConfirmation: boolean
+    waitConfirmation: boolean,
+    options?: HttpSendOptions
   ): Promise<string> {
     const encoded = transaction.toString('base64');
 
@@ -1667,7 +1365,7 @@ export class DefaultClient extends BaseClient {
       ],
     };
 
-    const result = (await this.post(this.rpcUrl, payload)) as any;
+    const result = (await this.post(this.rpcUrl, payload, {}, options)) as any;
 
     if (result.error) {
       throw new TradeError(result.error.code || 500, result.error.message);
@@ -1689,242 +1387,6 @@ export class DefaultClient extends BaseClient {
   }
 }
 
-// ===== QUIC helper (Astralane / Soyas / Speedlanding / Solami) =====
-
-/**
- * Send raw transaction bytes via QUIC to a Solana TPU endpoint.
- *
- * Uses @matrixai/quic (ESM-only) via dynamic import so this file stays CJS-
- * compatible. Most Solana TPU providers use self-signed Ed25519 certs with
- * ALPN "solana-tpu"; Astralane uses ECDSA P-256 with ALPN "astralane-tpu".
- *
- * Install optional deps:  npm install @matrixai/quic
- */
-interface QuicSenderOptions {
-  alpn?: string;
-  commonName?: string;
-  algorithm?: string;
-  key?: string;
-  cert?: string;
-}
-
-async function createMatrixQuicClient(
-  host: string,
-  port: number,
-  serverName: string,
-  options: QuicSenderOptions = {},
-): Promise<any> {
-  let QUICClient: any;
-  try {
-    ({ QUICClient } = await import('@matrixai/quic'));
-  } catch {
-    throw new TradeError(
-      501,
-      'QUIC not available: run "npm install @matrixai/quic" to enable QUIC SWQOS providers.',
-    );
-  }
-
-  let key = options.key;
-  let cert = options.cert;
-  if (!key || !cert) {
-    const pems = options.algorithm === 'ecdsa'
-      ? await createP256ClientCertificate(options.commonName ?? 'Solana node')
-      : await createEd25519ClientCertificate(undefined, options.commonName ?? 'Solana node');
-    key = pems.private;
-    cert = pems.cert;
-  }
-
-  const nodeCrypto = await import('crypto');
-  return QUICClient.createQUICClient({
-    host,
-    port,
-    serverName,
-    crypto: {
-      ops: {
-        randomBytes: async (data: ArrayBuffer) => {
-          nodeCrypto.randomFillSync(Buffer.from(data));
-        },
-      },
-    },
-    config: {
-      key,
-      cert,
-      verifyPeer: false,
-      applicationProtos: [options.alpn ?? 'solana-tpu'],
-      tlsVersion: 'tlsv13',
-      keepAliveIntervalTime: 25_000,
-      maxIdleTimeout: 30_000,
-    },
-  });
-}
-
-async function writeMatrixQuicStream(client: any, txBytes: Uint8Array): Promise<void> {
-  const stream = client.connection.newStream('uni');
-  const writer = stream.writable.getWriter();
-  await writer.write(txBytes);
-  await writer.close();
-}
-
-class PersistentQuicSender {
-  private client?: any;
-  private connectPromise?: Promise<any>;
-
-  constructor(
-    private readonly host: string,
-    private readonly port: number,
-    private readonly serverName: string,
-    private readonly options: QuicSenderOptions,
-  ) {}
-
-  private async connect(): Promise<any> {
-    if (this.client) return this.client;
-    this.connectPromise ??= createMatrixQuicClient(this.host, this.port, this.serverName, this.options);
-    try {
-      this.client = await this.connectPromise;
-      return this.client;
-    } finally {
-      this.connectPromise = undefined;
-    }
-  }
-
-  private async invalidate(): Promise<void> {
-    const client = this.client;
-    this.client = undefined;
-    if (client) {
-      try { await client.destroy(); } catch { /* already closed */ }
-    }
-  }
-
-  async send(txBytes: Uint8Array): Promise<void> {
-    try {
-      await writeMatrixQuicStream(await this.connect(), txBytes);
-    } catch {
-      await this.invalidate();
-      await writeMatrixQuicStream(await this.connect(), txBytes);
-    }
-  }
-}
-
-async function sendViaQUIC(
-  host: string,
-  port: number,
-  serverName: string,
-  txBytes: Uint8Array,
-  options: QuicSenderOptions = {},
-): Promise<void> {
-  const client = await createMatrixQuicClient(host, port, serverName, options);
-
-  try {
-    await writeMatrixQuicStream(client, txBytes);
-    // Brief delay to allow the stack to flush before closing
-    await new Promise(resolve => setTimeout(resolve, 50));
-  } finally {
-    await client.destroy();
-  }
-}
-
-async function createEd25519ClientCertificate(
-  keypairBytes?: Uint8Array,
-  commonName = 'Solana node',
-): Promise<{ private: string; cert: string }> {
-  const nodeCrypto = await import('crypto');
-  const x509 = await import('@peculiar/x509');
-  x509.cryptoProvider.set(nodeCrypto.webcrypto as any);
-
-  let keys: any;
-  let privateDer: Buffer;
-  if (keypairBytes) {
-    const seed = Buffer.from(keypairBytes.subarray(0, 32));
-    const publicKeyBytes = Buffer.from(keypairBytes.subarray(32, 64));
-    privateDer = Buffer.concat([
-      Buffer.from('302e020100300506032b657004220420', 'hex'),
-      seed,
-    ]);
-    const publicDer = Buffer.concat([
-      Buffer.from('302a300506032b6570032100', 'hex'),
-      publicKeyBytes,
-    ]);
-    keys = {
-      privateKey: await nodeCrypto.webcrypto.subtle.importKey(
-        'pkcs8',
-        privateDer,
-        'Ed25519',
-        true,
-        ['sign'],
-      ),
-      publicKey: await nodeCrypto.webcrypto.subtle.importKey(
-        'spki',
-        publicDer,
-        'Ed25519',
-        true,
-        ['verify'],
-      ),
-    };
-  } else {
-    keys = await nodeCrypto.webcrypto.subtle.generateKey(
-      'Ed25519',
-      true,
-      ['sign', 'verify'],
-    );
-    privateDer = Buffer.from(
-      await nodeCrypto.webcrypto.subtle.exportKey('pkcs8', keys.privateKey),
-    );
-  }
-
-  const alg = { name: 'Ed25519' };
-  const cert = await x509.X509CertificateGenerator.createSelfSigned({
-    serialNumber: Buffer.from(nodeCrypto.randomBytes(8)).toString('hex'),
-    name: `CN=${commonName}`,
-    notBefore: new Date('1975-01-01T00:00:00Z'),
-    notAfter: new Date('4096-01-01T00:00:00Z'),
-    signingAlgorithm: alg,
-    keys,
-    extensions: [
-      new x509.BasicConstraintsExtension(false, undefined, true),
-      new x509.KeyUsagesExtension(x509.KeyUsageFlags.digitalSignature, true),
-      new x509.ExtendedKeyUsageExtension(['1.3.6.1.5.5.7.3.2'], false),
-      new x509.SubjectAlternativeNameExtension([{ type: 'ip', value: '0.0.0.0' }], false),
-    ],
-  });
-  const privatePem = nodeCrypto.createPrivateKey({
-    key: privateDer,
-    format: 'der',
-    type: 'pkcs8',
-  }).export({ format: 'pem', type: 'pkcs8' }) as string;
-  return { private: privatePem, cert: cert.toString('pem') };
-}
-
-async function createP256ClientCertificate(
-  commonName = 'Solana node',
-): Promise<{ private: string; cert: string }> {
-  const nodeCrypto = await import('crypto');
-  const x509 = await import('@peculiar/x509');
-  x509.cryptoProvider.set(nodeCrypto.webcrypto as any);
-
-  const keys = await nodeCrypto.webcrypto.subtle.generateKey(
-    { name: 'ECDSA', namedCurve: 'P-256' },
-    true,
-    ['sign', 'verify'],
-  );
-  const privateDer = Buffer.from(
-    await nodeCrypto.webcrypto.subtle.exportKey('pkcs8', keys.privateKey),
-  );
-  const cert = await x509.X509CertificateGenerator.createSelfSigned({
-    serialNumber: Buffer.from(nodeCrypto.randomBytes(8)).toString('hex'),
-    name: `CN=${commonName}`,
-    notBefore: new Date(Date.now() - 60 * 60 * 1000),
-    notAfter: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
-    signingAlgorithm: { name: 'ECDSA', hash: 'SHA-256' },
-    keys,
-  });
-  const privatePem = nodeCrypto.createPrivateKey({
-    key: privateDer,
-    format: 'der',
-    type: 'pkcs8',
-  }).export({ format: 'pem', type: 'pkcs8' }) as string;
-  return { private: privatePem, cert: cert.toString('pem') };
-}
-
 function signatureFromSerializedTransaction(raw: Buffer | Uint8Array): string {
   const data = raw instanceof Buffer ? raw : Buffer.from(raw);
   const signatureCount = data[0] ?? 0;
@@ -1934,286 +1396,30 @@ function signatureFromSerializedTransaction(raw: Buffer | Uint8Array): string {
   return bs58.encode(data.subarray(1, 65));
 }
 
-function solanaKeypairSecretFromBase58(apiKey?: string): Uint8Array {
-  if (!apiKey) {
-    throw new TradeError(400, 'Solami api token is required and must be a base58-encoded Solana keypair');
-  }
-  let decoded: Uint8Array;
-  try {
-    decoded = bs58.decode(apiKey.trim());
-  } catch (e) {
-    throw new TradeError(400, `Solami api token base58 decode failed: ${e instanceof Error ? e.message : String(e)}`);
-  }
-  if (decoded.length !== 64) {
-    throw new TradeError(400, `Solami api token must decode to 64 bytes, got ${decoded.length}`);
-  }
-  return decoded;
-}
-
-async function solamiClientCertificate(apiKey?: string): Promise<{ key: string; cert: string }> {
-  const pems = await createEd25519ClientCertificate(solanaKeypairSecretFromBase58(apiKey));
-  return { key: pems.private, cert: pems.cert };
-}
-
-function hostPortFromHttp(endpoint: string, port: number): { host: string; port: number } {
-  try {
-    const url = new URL(endpoint);
-    return { host: url.hostname, port };
-  } catch {
-    const withoutScheme = endpoint.replace(/^https?:\/\//, '').split('/')[0]!;
-    const lastColon = withoutScheme.lastIndexOf(':');
-    const host = lastColon >= 0 ? withoutScheme.slice(0, lastColon) : withoutScheme;
-    return { host, port };
+// Native-only providers retain metadata compatibility but cannot submit over HTTP.
+abstract class HttpUnavailableClient extends BaseClient {
+  constructor(_rpcUrl: string, _endpoint: string, _apiKey?: string) { super(); }
+  async sendTransaction(_tradeType: TradeType, _transaction: Buffer, _waitConfirmation: boolean, _options?: HttpSendOptions): Promise<string> {
+    throw new TradeError(501, `${this.getSwqosType()} HTTP submission is unavailable`);
   }
 }
-
-function uuidToBytes(apiKey: string): Uint8Array {
-  const hex = apiKey.replace(/-/g, '');
-  if (!/^[0-9a-fA-F]{32}$/.test(hex)) {
-    throw new TradeError(400, 'Node1 QUIC API key must be a UUID');
-  }
-  return new Uint8Array(Buffer.from(hex, 'hex'));
-}
-
-async function readQuicStream(stream: any): Promise<Uint8Array> {
-  const reader = stream.readable.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      if (value) {
-        const chunk = new Uint8Array(value);
-        chunks.push(chunk);
-        total += chunk.length;
-      }
-    }
-  } finally {
-    reader.releaseLock?.();
-  }
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return out;
-}
-
-async function sendNode1ViaQUIC(
-  host: string,
-  port: number,
-  apiKey: string,
-  txBytes: Uint8Array,
-): Promise<void> {
-  let QUICClient: any;
-  try {
-    ({ QUICClient } = await import('@matrixai/quic'));
-  } catch {
-    throw new TradeError(501, 'QUIC not available: run "npm install @matrixai/quic" to enable Node1 QUIC.');
-  }
-  if (txBytes.length > 1232) {
-    throw new TradeError(400, `Node1 QUIC transaction too large: ${txBytes.length} > 1232`);
-  }
-
-  const client = await QUICClient.createQUICClient({
-    host,
-    port,
-    config: {
-      verifyPeer: false,
-      applicationProtos: ['h3'],
-      tlsVersion: 'tlsv13',
-      serverName: host,
-    },
-  });
-
-  try {
-    const authStream = client.connection.newStream('bi');
-    const authWriter = authStream.writable.getWriter();
-    await authWriter.write(uuidToBytes(apiKey));
-    await authWriter.close();
-    const authReply = await readQuicStream(authStream);
-    if (authReply[0] !== 0) {
-      throw new TradeError(401, `Node1 QUIC auth rejected: ${authReply[0] ?? -1}`);
-    }
-
-    const txStream = client.connection.newStream('bi');
-    const txWriter = txStream.writable.getWriter();
-    await txWriter.write(txBytes);
-    await txWriter.close();
-    const response = await readQuicStream(txStream);
-    if (response.length < 6) {
-      throw new TradeError(500, 'Node1 QUIC response too short');
-    }
-    const status = (response[0]! << 8) | response[1]!;
-    const msgLen = (response[2]! << 24) | (response[3]! << 16) | (response[4]! << 8) | response[5]!;
-    const msg = Buffer.from(response.slice(6, 6 + msgLen)).toString('utf8');
-    if (status !== 200) {
-      throw new TradeError(status, `Node1 QUIC submit failed: ${msg}`);
-    }
-  } finally {
-    await client.destroy();
-  }
-}
-
-// ===== Soyas Client =====
-
-/**
- * Soyas SWQOS client.
- *
- * Transport: QUIC with self-signed Ed25519 cert, ALPN "solana-tpu".
- * Endpoint:  host:port (e.g. nyc.landing.soyas.xyz:9000)
- * SNI:       "soyas-landing" (matches Rust SDK SOYAS_SERVER constant)
- * Requires:  npm install @matrixai/quic selfsigned
- */
-export class SoyasClient implements SwqosClient {
-  private readonly tipAccount: string;
-  private readonly host: string;
-  private readonly port: number;
-
-  constructor(
-    private readonly rpcUrl: string,
-    private readonly endpoint: string,
-    private readonly apiKey?: string,
-  ) {
-    this.tipAccount = randomChoice(SOYAS_TIP_ACCOUNTS);
-    const parts = endpoint.split(':');
-    this.host = parts.slice(0, -1).join(':') || endpoint;
-    this.port = parts.length > 1 ? parseInt(parts[parts.length - 1]!, 10) : 9000;
-  }
-
-  async sendTransaction(
-    _tradeType: TradeType,
-    transaction: Buffer,
-    _waitConfirmation: boolean,
-  ): Promise<string> {
-    await sendViaQUIC(this.host, this.port, 'soyas-landing', new Uint8Array(transaction));
-    return signatureFromSerializedTransaction(transaction);
-  }
-
-  async sendTransactions(
-    tradeType: TradeType,
-    transactions: Buffer[],
-    waitConfirmation: boolean,
-  ): Promise<string[]> {
-    for (const tx of transactions) {
-      await this.sendTransaction(tradeType, tx, waitConfirmation);
-    }
-    return transactions.map(tx => signatureFromSerializedTransaction(tx));
-  }
-
-  getTipAccount(): string { return this.tipAccount; }
+export class SoyasClient extends HttpUnavailableClient {
+  getTipAccount(): string { return randomChoice(SOYAS_TIP_ACCOUNTS); }
   getSwqosType(): SwqosType { return SwqosType.Soyas; }
   minTipSol(): number { return MIN_TIP_SOYAS; }
 }
 
-// ===== Speedlanding Client =====
-
-/**
- * Speedlanding SWQOS client.
- *
- * Transport: QUIC with self-signed Ed25519 cert, ALPN "solana-tpu".
- * Endpoint:  host:port (e.g. nyc.speedlanding.trade:17778)
- * SNI:       fixed "speed-landing" to match Rust SDK behavior.
- * Requires:  npm install @matrixai/quic selfsigned
- */
-export class SpeedlandingClient implements SwqosClient {
-  private readonly tipAccount: string;
-  private readonly host: string;
-  private readonly port: number;
-  private readonly serverName: string;
-
-  constructor(
-    private readonly rpcUrl: string,
-    private readonly endpoint: string,
-    private readonly apiKey?: string,
-  ) {
-    this.tipAccount = randomChoice(SPEEDLANDING_TIP_ACCOUNTS);
-    const lastColon = endpoint.lastIndexOf(':');
-    this.host = lastColon >= 0 ? endpoint.slice(0, lastColon) : endpoint;
-    this.port = lastColon >= 0 ? parseInt(endpoint.slice(lastColon + 1), 10) : 17778;
-    // Kept for compatibility with existing private fields; submit uses the Rust fixed SNI.
-    this.serverName = /^\d+\.\d+\.\d+\.\d+$/.test(this.host) ? 'speed-landing' : this.host;
-  }
-
-  async sendTransaction(
-    _tradeType: TradeType,
-    transaction: Buffer,
-    _waitConfirmation: boolean,
-  ): Promise<string> {
-    await sendViaQUIC(this.host, this.port, 'speed-landing', new Uint8Array(transaction));
-    return signatureFromSerializedTransaction(transaction);
-  }
-
-  async sendTransactions(
-    tradeType: TradeType,
-    transactions: Buffer[],
-    waitConfirmation: boolean,
-  ): Promise<string[]> {
-    for (const tx of transactions) {
-      await this.sendTransaction(tradeType, tx, waitConfirmation);
-    }
-    return transactions.map(tx => signatureFromSerializedTransaction(tx));
-  }
-
-  getTipAccount(): string { return this.tipAccount; }
+export class SpeedlandingClient extends HttpUnavailableClient {
+  getTipAccount(): string { return randomChoice(SPEEDLANDING_TIP_ACCOUNTS); }
   getSwqosType(): SwqosType { return SwqosType.Speedlanding; }
   minTipSol(): number { return MIN_TIP_SPEEDLANDING; }
 }
 
-// ===== Solami Client =====
-
-/**
- * Solami SWQOS client.
- *
- * Transport: QUIC with ALPN "solana-tpu".
- * Endpoint:  host:port (Rust default: beam.solami.dev:11000)
- * SNI:       "solami-beam" (Rust SDK SOLAMI_SERVER constant)
- */
-export class SolamiClient implements SwqosClient {
-  private readonly tipAccount: string;
-  private readonly host: string;
-  private readonly port: number;
-
-  constructor(
-    private readonly rpcUrl: string,
-    private readonly endpoint: string,
-    private readonly apiKey?: string,
-  ) {
-    this.tipAccount = randomChoice(SOLAMI_TIP_ACCOUNTS);
-    const lastColon = endpoint.lastIndexOf(':');
-    this.host = lastColon >= 0 ? endpoint.slice(0, lastColon) : endpoint;
-    this.port = lastColon >= 0 ? parseInt(endpoint.slice(lastColon + 1), 10) : 11000;
-  }
-
-  async sendTransaction(
-    _tradeType: TradeType,
-    transaction: Buffer,
-    _waitConfirmation: boolean,
-  ): Promise<string> {
-    const pems = await solamiClientCertificate(this.apiKey);
-    await sendViaQUIC(this.host, this.port, 'solami-beam', new Uint8Array(transaction), pems);
-    return signatureFromSerializedTransaction(transaction);
-  }
-
-  async sendTransactions(
-    tradeType: TradeType,
-    transactions: Buffer[],
-    waitConfirmation: boolean,
-  ): Promise<string[]> {
-    for (const tx of transactions) {
-      await this.sendTransaction(tradeType, tx, waitConfirmation);
-    }
-    return transactions.map(tx => signatureFromSerializedTransaction(tx));
-  }
-
-  getTipAccount(): string { return this.tipAccount; }
+export class SolamiClient extends HttpUnavailableClient {
+  getTipAccount(): string { return randomChoice(SOLAMI_TIP_ACCOUNTS); }
   getSwqosType(): SwqosType { return SwqosType.Solami; }
   minTipSol(): number { return MIN_TIP_SOLAMI; }
 }
-
-// ===== Client Factory =====
 
 export interface SwqosClientConfig {
   type: SwqosType;
@@ -2233,6 +1439,10 @@ export class ClientFactory {
         400,
         `SWQOS type is blacklisted by Rust v4.0.21 parity: ${config.type}`
       );
+    }
+    if ((config.transport !== undefined && config.transport !== SwqosTransport.Http) ||
+        config.astralaneTransport === AstralaneTransport.Quic) {
+      throw new TradeError(400, 'Only HTTP SWQOS transport is available; gRPC and QUIC are unsupported');
     }
     const region = config.region ?? SwqosRegion.Default;
 
@@ -2254,18 +1464,7 @@ export class ClientFactory {
 
       case SwqosType.Temporal: {
         const endpoint = config.customUrl || TEMPORAL_ENDPOINTS[region];
-        if (config.customUrl && config.transport === undefined) {
-          return new TemporalClient(rpcUrl, endpoint, config.apiKey);
-        }
-        if (config.transport === SwqosTransport.Http) {
-          return new TemporalClient(rpcUrl, endpoint, config.apiKey);
-        }
-        if (config.transport === SwqosTransport.Grpc) {
-          throw new TradeError(400, 'Temporal does not provide a gRPC transaction-submission API');
-        }
-        const quic = new TemporalQuicClient(rpcUrl, endpoint, config.apiKey);
-        if (config.transport === SwqosTransport.Quic) return quic;
-        return new FallbackSwqosClient(quic, new TemporalClient(rpcUrl, endpoint, config.apiKey));
+        return new TemporalClient(rpcUrl, endpoint, config.apiKey);
       }
 
       case SwqosType.FlashBlock: {
@@ -2280,72 +1479,18 @@ export class ClientFactory {
 
       case SwqosType.Node1: {
         const endpoint = config.customUrl || NODE1_ENDPOINTS[region];
-        if (config.transport === SwqosTransport.Quic) {
-          const parsed = /^https?:\/\//.test(endpoint)
-            ? hostPortFromHttp(endpoint, 16666)
-            : (() => {
-                const lastColon = endpoint.lastIndexOf(':');
-                return {
-                  host: lastColon >= 0 ? endpoint.slice(0, lastColon) : endpoint,
-                  port: lastColon >= 0 ? parseInt(endpoint.slice(lastColon + 1), 10) : 16666,
-                };
-              })();
-          return new Node1QuicClient(rpcUrl, `${parsed.host}:${parsed.port}`, config.apiKey || '');
-        }
         return new Node1Client(rpcUrl, endpoint, config.apiKey);
       }
 
       case SwqosType.BlockRazor: {
-        const httpEndpoint = config.customUrl || BLOCK_RAZOR_ENDPOINTS[region];
-        if (config.customUrl && config.transport === undefined) {
-          return new BlockRazorClient(rpcUrl, httpEndpoint, config.apiKey, config.mevProtection ?? false);
-        }
-        if (config.transport === SwqosTransport.Http) {
-          return new BlockRazorClient(rpcUrl, httpEndpoint, config.apiKey, config.mevProtection ?? false);
-        }
-        if (config.transport === SwqosTransport.Quic) {
-          throw new TradeError(400, 'BlockRazor does not provide a QUIC transaction-submission API');
-        }
-        const grpcEndpoint = config.customUrl || BLOCK_RAZOR_GRPC_ENDPOINTS[region];
-        const grpcClient = new BlockRazorGrpcClient(rpcUrl, grpcEndpoint, config.apiKey, config.mevProtection ?? false);
-        if (config.transport === SwqosTransport.Grpc) return grpcClient;
-        return new FallbackSwqosClient(
-          grpcClient,
-          new BlockRazorClient(rpcUrl, httpEndpoint, config.apiKey, config.mevProtection ?? false),
-        );
+        const endpoint = config.customUrl || BLOCK_RAZOR_ENDPOINTS[region];
+        return new BlockRazorClient(rpcUrl, endpoint, config.apiKey, config.mevProtection ?? false);
       }
 
       case SwqosType.Astralane: {
         const baseEndpoint = config.customUrl || ASTRALANE_ENDPOINTS[region];
-        if (config.customUrl && config.astralaneTransport === undefined) {
-          return new AstralaneClient(rpcUrl, baseEndpoint, config.apiKey);
-        }
-        if (config.astralaneTransport === AstralaneTransport.Quic) {
-          let endpoint: string;
-          const port = config.mevProtection ? 9000 : 7000;
-          if (config.customUrl) {
-            if (/^https?:\/\//.test(config.customUrl)) {
-              const parsed = hostPortFromHttp(config.customUrl, port);
-              endpoint = `${parsed.host}:${parsed.port}`;
-            } else {
-              endpoint = config.customUrl;
-            }
-          } else {
-            endpoint = `${ASTRALANE_QUIC_HOSTS[region]}:${port}`;
-          }
-          return new AstralaneQuicClient(rpcUrl, endpoint, config.apiKey || '');
-        }
-        const endpoint =
-          config.astralaneTransport === AstralaneTransport.Plain
-            ? baseEndpoint.replace('/irisb', '/iris')
-            : baseEndpoint;
-        if (config.astralaneTransport === undefined) {
-          const port = config.mevProtection ? 9000 : 7000;
-          return new FallbackSwqosClient(
-            new AstralaneQuicClient(rpcUrl, `${ASTRALANE_QUIC_HOSTS[region]}:${port}`, config.apiKey || ''),
-            new AstralaneClient(rpcUrl, endpoint, config.apiKey),
-          );
-        }
+        const endpoint = config.astralaneTransport === AstralaneTransport.Plain
+          ? baseEndpoint.replace('/irisb', '/iris') : baseEndpoint;
         return new AstralaneClient(rpcUrl, endpoint, config.apiKey);
       }
 
@@ -2382,7 +1527,7 @@ export class ClientFactory {
       }
 
       case SwqosType.Default:
-        return new DefaultClient(rpcUrl);
+        return new DefaultClient(config.customUrl || rpcUrl);
 
       default:
         throw new TradeError(

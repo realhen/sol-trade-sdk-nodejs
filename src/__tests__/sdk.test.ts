@@ -1,3 +1,4 @@
+import { SwqosTransport, AstralaneTransport } from '../enums';
 /**
  * Tests for Sol Trade SDK - TypeScript
  */
@@ -53,16 +54,15 @@ import {
 import {
   ASTRALANE_ENDPOINTS,
   AstralaneClient as SenderAstralaneClient,
-  AstralaneQuicClient as SenderAstralaneQuicClient,
   ASTRALANE_QUIC_HOSTS,
   BLOXROUTE_ENDPOINTS,
   BloxrouteClient as SenderBloxrouteClient,
   BlockRazorClient as SenderBlockRazorClient,
-  BlockRazorGrpcClient as SenderBlockRazorGrpcClient,
   BLOCK_RAZOR_ENDPOINTS,
   ClientFactory as SenderClientFactory,
+  DefaultClient as SenderDefaultClient,
+  JitoClient as SenderJitoClient,
   encodeTemporalBatch,
-  FallbackSwqosClient,
   MIN_TIP_DEFAULT,
   MIN_TIP_SOLAMI,
   NODE1_ENDPOINTS,
@@ -71,7 +71,6 @@ import {
   SPEEDLANDING_ENDPOINTS,
   STELLIUM_ENDPOINTS,
   TemporalClient as SenderTemporalClient,
-  TemporalQuicClient as SenderTemporalQuicClient,
 } from '../swqos/clients';
 import {
   AstralaneClient as ProviderAstralaneClient,
@@ -552,7 +551,7 @@ describe('Solami SWQOS parity', () => {
     expect(client.minTipSol()).toBe(MIN_TIP_SOLAMI);
   });
 
-  it('sender Solami requires Rust-style api token for client certificate auth', async () => {
+  it('sender Solami explicitly rejects unavailable HTTP transport', async () => {
     const client = SenderClientFactory.createClient(
       { type: SwqosType.Solami, region: SwqosRegion.Tokyo },
       'https://rpc.example'
@@ -560,7 +559,7 @@ describe('Solami SWQOS parity', () => {
 
     await expect(
       client.sendTransaction(TradeType.Buy, Buffer.from([1, ...new Array(64).fill(0)]), false)
-    ).rejects.toThrow(/Solami api token is required/);
+    ).rejects.toThrow(/Solami HTTP submission is unavailable/);
   });
 
   it('provider factory exposes Solami provider', () => {
@@ -583,7 +582,7 @@ describe('Solami SWQOS parity', () => {
     });
     const result = await provider.submitTransaction(Buffer.from([1, ...new Array(64).fill(0)]));
     expect(result.success).toBe(false);
-    expect(result.error).toContain('Solami api token is required');
+    expect(result.error).toContain('Solami HTTP submission is unavailable');
   });
 
   it('provider BlockRazor delegates to Rust-parity sender request shape', async () => {
@@ -624,7 +623,7 @@ describe('Solami SWQOS parity', () => {
       expect(parsed.searchParams.get('method')).toBe('sendTransaction');
       expect(init.headers).toMatchObject({ 'Content-Type': 'application/octet-stream' });
       expect(Buffer.from(init.body as any)).toEqual(tx);
-      return new Response('', { status: 200 });
+      return new Response(JSON.stringify({ success: true }), { status: 200 });
     });
     globalThis.fetch = fetchMock as any;
 
@@ -666,7 +665,7 @@ describe('Solami SWQOS parity', () => {
     const signature = 'yfK1R3WTSB1111111111111111111111111111111111111111111111111111';
     const fetchMock = vi.fn(async (url: string) => {
       expect(url).toContain('swqos_only=true');
-      return new Response(JSON.stringify({ result: signature }), { status: 200 });
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: '1', result: signature }), { status: 200 });
     });
     globalThis.fetch = fetchMock as any;
 
@@ -1007,7 +1006,7 @@ describe('TradingClient execution parity', () => {
     expect(result.error?.message).toContain('durable_nonce');
   });
 
-  it('allows one non-default SWQOS plus default RPC fallback without durable nonce', async () => {
+  it('requires a nonce for SWQOS plus a default RPC variant', async () => {
     const payer = Keypair.generate();
     const client = new (TradingClient as any)(
       payer,
@@ -1033,8 +1032,8 @@ describe('TradingClient execution parity', () => {
       }
     );
 
-    expect(first.success).toBe(true);
-    expect(first.signatures).toEqual(['sig-swqos']);
+    expect(first.success).toBe(false);
+    expect(first.error?.message).toContain('durable_nonce');
 
     const all = await client.executeTransaction(
       [new TransactionInstruction({ programId: PublicKey.default, keys: [], data: Buffer.from([1]) })],
@@ -1049,8 +1048,81 @@ describe('TradingClient execution parity', () => {
       }
     );
 
-    expect(all.success).toBe(true);
-    expect(all.signatures).toEqual(['sig-swqos', 'sig-rpc']);
+    expect(all.success).toBe(false);
+    expect(all.error?.message).toContain('durable_nonce');
+    expect(client.getSwqosClient).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { failure: 'client', description: 'later route client creation fails', message: 'late route unavailable' },
+    { failure: 'oversized', description: 'later signed variant exceeds packet size', message: 'transaction too large' },
+    { failure: 'nonce', description: 'middleware strips the later variant nonce', message: 'unchanged first nonce advance' },
+  ])('sends nothing when $description', async ({ failure, message }) => {
+    const payer = Keypair.generate();
+    const nonceAccount = Keypair.generate().publicKey;
+    const nonceHash = 'p2Yicb86aZig616Eav2VWG9vuXR5mEqhtzshZYBxzsV';
+    const preparedInstructions: TransactionInstruction[][] = [];
+    const middleware: InstructionMiddleware = {
+      name: () => 'RoutePreparationWorkflow',
+      processProtocolInstructions: (instructions) => instructions,
+      processFullInstructions: (instructions) => {
+        preparedInstructions.push(instructions);
+        if (preparedInstructions.length !== 2) return instructions;
+        if (failure === 'nonce') return instructions.slice(1);
+        if (failure === 'oversized') {
+          return [...instructions, new TransactionInstruction({
+            programId: PublicKey.default,
+            keys: [],
+            data: Buffer.alloc(2000, 1),
+          })];
+        }
+        return instructions;
+      },
+      clone: () => middleware,
+    };
+    const client = new (TradingClient as any)(
+      payer,
+      TradeConfigBuilder.create('https://rpc.example')
+        .swqosConfigs([{ type: SwqosType.Jito, region: SwqosRegion.Frankfurt }])
+        .middlewareManager(new MiddlewareManager().addMiddleware(middleware))
+        .build()
+    );
+    const jito = fakeRuntimeSwqosClient('jito-signature');
+    const rpc = fakeRuntimeSwqosClient('rpc-signature');
+    client.getSwqosClient = vi.fn((_: unknown, cfg: { type: SwqosType }) => {
+      if (cfg.type === SwqosType.Default && failure === 'client') {
+        throw new TradeError(503, 'late route unavailable');
+      }
+      return cfg.type === SwqosType.Jito ? jito : rpc;
+    });
+    client.connection = { sendRawTransaction: vi.fn(async () => 'unexpected-send') };
+
+    const result = await client.executeTransaction(
+      [new TransactionInstruction({ programId: PublicKey.default, keys: [], data: Buffer.from([1]) })],
+      nonceHash,
+      undefined,
+      false,
+      false,
+      {
+        tradeType: TradeType.Buy,
+        dexType: DexType.PumpFun,
+        durableNonce: { nonceAccount, authority: payer.publicKey, nonceHash },
+        waitForAllSubmits: true,
+      }
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.signatures).toEqual([]);
+    expect(result.error?.message).toContain(message);
+    expect(preparedInstructions).toHaveLength(failure === 'client' ? 1 : 2);
+    for (const instructions of preparedInstructions) {
+      expect(instructions[0]!.data.readUInt32LE(0)).toBe(4);
+      expect(instructions[0]!.keys[0]!.pubkey.equals(nonceAccount)).toBe(true);
+    }
+    expect(jito.getTipAccount).toHaveBeenCalled();
+    expect(jito.sendTransaction).not.toHaveBeenCalled();
+    expect(rpc.sendTransaction).not.toHaveBeenCalled();
+    expect(client.connection.sendRawTransaction).not.toHaveBeenCalled();
   });
 
   it('returns provider error details when every SWQOS submit fails', async () => {
@@ -1077,6 +1149,7 @@ describe('TradingClient execution parity', () => {
         tradeType: TradeType.Buy,
         dexType: DexType.PumpFun,
         waitForAllSubmits: true,
+        durableNonce: {nonceAccount: Keypair.generate().publicKey, authority: payer.publicKey, nonceHash: 'p2Yicb86aZig616Eav2VWG9vuXR5mEqhtzshZYBxzsV'},
       }
     );
 
@@ -1225,7 +1298,7 @@ describe('Primary SWQOS clients (Rust parity)', () => {
       .resolves.toBe(signature);
   });
 
-  it('defaults to provider-preferred transport chains', () => {
+  it('defaults to the genuine HTTP implementations', () => {
     const temporal = SenderClientFactory.createClient(
       { type: SwqosType.Temporal, apiKey: 'token' },
       'http://rpc',
@@ -1239,15 +1312,9 @@ describe('Primary SWQOS clients (Rust parity)', () => {
       'http://rpc',
     );
 
-    expect(temporal).toBeInstanceOf(FallbackSwqosClient);
-    expect((temporal as FallbackSwqosClient).primary).toBeInstanceOf(SenderTemporalQuicClient);
-    expect((temporal as FallbackSwqosClient).fallback).toBeInstanceOf(SenderTemporalClient);
-    expect(blockrazor).toBeInstanceOf(FallbackSwqosClient);
-    expect((blockrazor as FallbackSwqosClient).primary).toBeInstanceOf(SenderBlockRazorGrpcClient);
-    expect((blockrazor as FallbackSwqosClient).fallback).toBeInstanceOf(SenderBlockRazorClient);
-    expect(astralane).toBeInstanceOf(FallbackSwqosClient);
-    expect((astralane as FallbackSwqosClient).primary).toBeInstanceOf(SenderAstralaneQuicClient);
-    expect((astralane as FallbackSwqosClient).fallback).toBeInstanceOf(SenderAstralaneClient);
+    expect(temporal).toBeInstanceOf(SenderTemporalClient);
+    expect(blockrazor).toBeInstanceOf(SenderBlockRazorClient);
+    expect(astralane).toBeInstanceOf(SenderAstralaneClient);
   });
 
   it('encodes Temporal batches with big-endian uint16 lengths', () => {
@@ -1259,26 +1326,105 @@ describe('Primary SWQOS clients (Rust parity)', () => {
     ]));
   });
 
-  it('falls back for service failures but not authentication or unclassified errors', async () => {
-    const fallback = {
-      sendTransaction: vi.fn(async () => 'fallback'),
-      sendTransactions: vi.fn(async () => ['fallback']),
-      getTipAccount: () => '',
-      getSwqosType: () => SwqosType.Temporal,
-      minTipSol: () => 0,
-    };
-    const primary = (error: unknown) => ({
-      ...fallback,
-      sendTransaction: vi.fn(async () => { throw error; }),
-      sendTransactions: vi.fn(async () => { throw error; }),
-    });
+  it('rejects explicit native transports instead of silently changing protocol', () => {
+    for (const type of [SwqosType.Default, SwqosType.Temporal, SwqosType.BlockRazor, SwqosType.Astralane]) {
+      for (const transport of [SwqosTransport.Grpc, SwqosTransport.Quic]) {
+        expect(() => SenderClientFactory.createClient({ type, transport }, 'https://rpc.example'))
+          .toThrow(/Only HTTP/);
+      }
+    }
+    expect(() => SenderClientFactory.createClient({
+      type: SwqosType.Astralane, astralaneTransport: AstralaneTransport.Quic,
+    }, 'https://rpc.example')).toThrow(/Only HTTP/);
+  });
 
-    await expect(new FallbackSwqosClient(primary(new TradeError(503, 'down')), fallback)
-      .sendTransaction(TradeType.Buy, Buffer.alloc(66), false)).resolves.toBe('fallback');
-    await expect(new FallbackSwqosClient(primary(new TradeError(401, 'bad key')), fallback)
-      .sendTransaction(TradeType.Buy, Buffer.alloc(66), false)).rejects.toThrow('bad key');
-    await expect(new FallbackSwqosClient(primary(new Error('application bug')), fallback)
-      .sendTransaction(TradeType.Buy, Buffer.alloc(66), false)).rejects.toThrow('application bug');
+  it('keeps concurrent HTTP options separate and sends each transaction once', async () => {
+    const calls: { url: string; init: RequestInit }[] = [];
+    globalThis.fetch = vi.fn(async (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: 'signature' }));
+    }) as any;
+    const client = new SenderDefaultClient('https://rpc.example/full/path?token=key');
+    await Promise.all([42, 84].map(minContextSlot => client.sendTransaction(
+      TradeType.Buy, dummySignedTransactionBytes(), false,
+      { minContextSlot, headers: { 'x-request': String(minContextSlot) } },
+    )));
+    expect(calls).toHaveLength(2);
+    for (const [index, { url, init }] of calls.entries()) {
+      const slot = index === 0 ? 42 : 84;
+      expect(url).toBe('https://rpc.example/full/path?token=key');
+      expect(init).toMatchObject({ redirect: 'error', credentials: 'omit', cache: 'no-store' });
+      expect(init.headers).toMatchObject({ 'x-request': String(slot) });
+      expect(JSON.parse(init.body as string).params[1]).toEqual({
+        encoding: 'base64', skipPreflight: true, maxRetries: 0, minContextSlot: slot,
+      });
+    }
+  });
+
+  it('accepts an existing Jito transaction URL and per-call authentication header', async () => {
+    globalThis.fetch = vi.fn(async (url: string, init: RequestInit) => {
+      expect(url).toBe('https://jito.example/api/v1/transactions?custom=1');
+      expect(init.headers).toMatchObject({ 'x-jito-auth': 'secret' });
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: 'signature' }));
+    }) as any;
+    const client = new SenderJitoClient('', 'https://jito.example/api/v1/transactions?custom=1');
+    await expect(client.sendTransaction(TradeType.Buy, dummySignedTransactionBytes(), false, {
+      headers: { 'x-jito-auth': 'secret' },
+    })).resolves.toBe('signature');
+  });
+
+  it('rejects malformed JSON-RPC responses without retrying', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ jsonrpc: '2.0', id: 2, result: 'signature' })));
+    globalThis.fetch = fetchMock as any;
+    await expect(new SenderDefaultClient('https://rpc.example').sendTransaction(
+      TradeType.Buy, dummySignedTransactionBytes(), false, {},
+    )).rejects.toThrow(/Invalid JSON-RPC/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('aborts the HTTP request on deadline and never retries', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn(async (_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+        init.signal!.addEventListener('abort', () => reject(init.signal!.reason), { once: true });
+      }));
+      globalThis.fetch = fetchMock as any;
+      const pending = new SenderDefaultClient('https://rpc.example').sendTransaction(
+        TradeType.Buy, dummySignedTransactionBytes(), false, {},
+      );
+      const rejected = expect(pending).rejects.toThrow(/timed out/);
+      await vi.advanceTimersByTimeAsync(8000);
+      await rejected;
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('passes caller cancellation to fetch and does not retry a service failure', async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      controller.abort(new Error('cancelled'));
+      expect(init.signal!.aborted).toBe(true);
+      return new Response('unavailable', { status: 503 });
+    });
+    globalThis.fetch = fetchMock as any;
+    await expect(new SenderDefaultClient('https://rpc.example').sendTransaction(
+      TradeType.Buy, dummySignedTransactionBytes(), false, { signal: controller.signal },
+    )).rejects.toThrow(/HTTP error/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves binary provider payloads when passing HTTP options', async () => {
+    const tx = dummySignedTransactionBytes();
+    globalThis.fetch = vi.fn(async (_url: string, init: RequestInit) => {
+      expect(Buffer.from(init.body as any)).toEqual(tx);
+      expect(init.headers).toMatchObject({ 'Content-Type': 'application/octet-stream', 'x-auth': 'key' });
+      return new Response(JSON.stringify({ success: true }), { status: 200 });
+    }) as any;
+    await expect(new SenderAstralaneClient('', 'https://astralane.example/irisb').sendTransaction(
+      TradeType.Buy, tx, false, { minContextSlot: 42, headers: { 'x-auth': 'key' } },
+    )).resolves.toBeTruthy();
   });
 
   it('Astralane binary HTTP sends raw transaction bytes instead of JSON-RPC', async () => {
@@ -1290,7 +1436,7 @@ describe('Primary SWQOS clients (Rust parity)', () => {
       expect(parsed.searchParams.get('method')).toBe('sendTransaction');
       expect(init.headers).toMatchObject({ 'Content-Type': 'application/octet-stream' });
       expect(Buffer.from(init.body as any)).toEqual(tx);
-      return new Response('', { status: 200 });
+      return new Response(JSON.stringify({ success: true }), { status: 200 });
     });
     globalThis.fetch = fetchMock as any;
 

@@ -6,11 +6,12 @@
 
 import {
   AstralaneTransport,
-  TradeError,
   TradeType,
   SwqosTransport,
   isSwqosTypeBlacklisted,
-} from '../index';
+} from '../enums';
+import { TradeError } from '../sdk-errors';
+import { Buffer } from 'buffer';
 import {
   AstralaneClient as SenderAstralaneClient,
   BlockRazorClient as SenderBlockRazorClient,
@@ -142,6 +143,10 @@ export abstract class SwqosClient {
   protected _rateLimitDelay: number;
 
   constructor(public readonly config: SwqosConfig) {
+    if ((config.transport !== undefined && config.transport !== SwqosTransport.Http) ||
+        config.astralaneTransport === AstralaneTransport.Quic) {
+      throw new TradeError(400, 'Only HTTP SWQOS transport is available; gRPC and QUIC are unsupported');
+    }
     const rateLimitRps = config.rateLimitRps ?? 100;
     this._rateLimitDelay = rateLimitRps > 0 ? 1000 / rateLimitRps : 0;
   }
@@ -307,7 +312,7 @@ class SenderBackedProviderClient extends SwqosClient {
       this.config.swqosType,
       startTime,
       transaction,
-      () => sender.sendTransaction(TradeType.Buy, transaction, false),
+      () => sender.sendTransaction(TradeType.Buy, transaction, false, { headers: this.config.customHeaders, timeoutMs: this.config.timeoutMs }),
       this.updateStats.bind(this),
     );
   }
@@ -1000,54 +1005,12 @@ export class LightspeedClient extends SwqosClient {
  * Soyas SWQOS client - MEV protection
  */
 export class SoyasClient extends SwqosClient {
-  private apiUrl: string;
-
-  constructor(config: SwqosConfig) {
-    super(config);
-    this.apiUrl = config.url || 'https://api.soyas.io';
+  async submitTransaction(_transaction: Buffer, _tip = 0): Promise<TransactionResult> {
+    const error = 'Soyas HTTP submission is unavailable';
+    this.updateStats(false, 0, error);
+    return { success: false, provider: 'Soyas', latencyMs: 0, error };
   }
-
-  async submitTransaction(transaction: Buffer, tip = 0): Promise<TransactionResult> {
-    await this.rateLimitCheck();
-    const startTime = Date.now();
-
-    try {
-      const encoded = transaction.toString('base64');
-      const payload = { transaction: encoded, tip };
-
-      const headers: Record<string, string> = {};
-      if (this.config.apiKey) {
-        headers['Authorization'] = `Bearer ${this.config.apiKey}`;
-      }
-
-      const result = (await this.post(`${this.apiUrl}/api/v1/submit`, payload, headers)) as any;
-
-      const latencyMs = Date.now() - startTime;
-      this.updateStats(true, latencyMs);
-
-      return {
-        success: true,
-        signature: result.signature,
-        provider: 'Soyas',
-        latencyMs,
-      };
-    } catch (error) {
-      const latencyMs = Date.now() - startTime;
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      this.updateStats(false, latencyMs, errorMsg);
-
-      return {
-        success: false,
-        provider: 'Soyas',
-        latencyMs,
-        error: errorMsg,
-      };
-    }
-  }
-
-  getProviderType(): SwqosType {
-    return SwqosType.Soyas;
-  }
+  getProviderType(): SwqosType { return SwqosType.Soyas; }
 }
 
 /**

@@ -1,3 +1,11 @@
+## Browser HTTP support in this fork (0.2.0)
+
+Import `sol-trade-sdk/browser` for instruction builders, shared transaction assembly, provider HTTP clients, and prepared multi-sender submission. Native gRPC/QUIC implementations and their dependencies have been removed. Temporal, BlockRazor, and Astralane default to HTTP; native transport requests and native-only providers fail explicitly.
+
+The browser flow is `buildSwapTransaction` → `prepareTransactionVariants` → caller signing and durable signature journaling → `sendPreparedTransactions`. Configure an untipped RPC route first. Multiple routes require a durable nonce with the payer as authority; route variants may add only their configured tip. Use `assertSenderVariants` at the trusted submission boundary. Callers own wallet access, account freshness, nonce reservation, persistence, and WebSocket confirmation. The prepared send API submits exact signed bytes once per route, without retrying, rebuilding, or polling for confirmation. HTTP acceptance does not establish on-chain success.
+
+The root entrypoint retains legacy Node-oriented orchestration/performance APIs. Browser callers should use the dedicated browser export. Legacy callers that request polling confirmation must migrate to caller-owned streams if they require streaming-only behavior.
+
 <div align="center">
     <h1>🚀 Sol Trade SDK for Node.js</h1>
     <h3><em>A comprehensive TypeScript SDK for seamless Solana DEX trading</em></h3>
