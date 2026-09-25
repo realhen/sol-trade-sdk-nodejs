@@ -383,9 +383,6 @@ function resolveCreatorVaultForSellV2(protocolParams: PumpFunParams, mint: Publi
 }
 
 function effectivePumpMintTokenProgram(mint: PublicKey, protocolParams: PumpFunParams): PublicKey {
-  if (mint.toBase58().endsWith("pump")) {
-    return TOKEN_2022_PROGRAM_ID;
-  }
   if (isUsablePubkey(protocolParams.tokenProgram)) {
     return protocolParams.tokenProgram;
   }
@@ -648,7 +645,7 @@ export function buildPumpFunBuyInstructions(
     { pubkey: creatorVaultAccount, isSigner: false, isWritable: true },
     { pubkey: PUMPFUN_EVENT_AUTHORITY, isSigner: false, isWritable: false },
     { pubkey: PUMPFUN_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: PUMPFUN_GLOBAL_VOLUME_ACCUMULATOR, isSigner: false, isWritable: true },
+    { pubkey: PUMPFUN_GLOBAL_VOLUME_ACCUMULATOR, isSigner: false, isWritable: false },
     { pubkey: userVolumeAccumulator, isSigner: false, isWritable: true },
     { pubkey: PUMPFUN_FEE_CONFIG, isSigner: false, isWritable: false },
     { pubkey: PUMPFUN_FEE_PROGRAM, isSigner: false, isWritable: false },
@@ -944,7 +941,7 @@ export function buildPumpFunBuyV2Instructions(
     { pubkey: SPL_ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: feeRecipientPk, isSigner: false, isWritable: true },
     { pubkey: associatedQuoteFeeRecipient, isSigner: false, isWritable: true },
-    { pubkey: buybackFeeRecipient, isSigner: false, isWritable: false },
+    { pubkey: buybackFeeRecipient, isSigner: false, isWritable: true },
     { pubkey: associatedQuoteBuybackFeeRecipient, isSigner: false, isWritable: true },
     { pubkey: bondingCurveAddr, isSigner: false, isWritable: true },
     { pubkey: associatedBaseBondingCurve, isSigner: false, isWritable: true },
@@ -955,7 +952,7 @@ export function buildPumpFunBuyV2Instructions(
     { pubkey: creatorVaultAccount, isSigner: false, isWritable: true },
     { pubkey: associatedCreatorVault, isSigner: false, isWritable: true },
     { pubkey: sharingConfig, isSigner: false, isWritable: false },
-    { pubkey: PUMPFUN_GLOBAL_VOLUME_ACCUMULATOR, isSigner: false, isWritable: true },
+    { pubkey: PUMPFUN_GLOBAL_VOLUME_ACCUMULATOR, isSigner: false, isWritable: false },
     { pubkey: userVolumeAccumulator, isSigner: false, isWritable: true },
     { pubkey: associatedUserVolumeAccumulator, isSigner: false, isWritable: true },
     { pubkey: PUMPFUN_FEE_CONFIG, isSigner: false, isWritable: false },
@@ -1099,7 +1096,7 @@ export function buildPumpFunSellV2Instructions(
     { pubkey: SPL_ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: feeRecipientPk, isSigner: false, isWritable: true },
     { pubkey: associatedQuoteFeeRecipient, isSigner: false, isWritable: true },
-    { pubkey: buybackFeeRecipient, isSigner: false, isWritable: false },
+    { pubkey: buybackFeeRecipient, isSigner: false, isWritable: true },
     { pubkey: associatedQuoteBuybackFeeRecipient, isSigner: false, isWritable: true },
     { pubkey: bondingCurveAddr, isSigner: false, isWritable: true },
     { pubkey: associatedBaseBondingCurve, isSigner: false, isWritable: true },
