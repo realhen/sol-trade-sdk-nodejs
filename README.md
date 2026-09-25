@@ -447,3 +447,7 @@ Callers own snapshot freshness, account validation, transaction assembly, signin
 and submission. Build both entrypoints with `npm run build`, or only the browser
 entrypoint with `npm run build:browser`. The browser output is ESM for a bundler;
 it is not a standalone script for direct inclusion in a page.
+
+Strict TypeScript consumers need the Node type declarations used by
+`@solana/web3.js` (for example, `@types/node`). These are compile-time types;
+the browser runtime does not require a global `process` or `Buffer`.
