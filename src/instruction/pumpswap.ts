@@ -374,6 +374,8 @@ export interface BuildBuyParams {
   closeInputMintAta?: boolean;
   createOutputMintAta?: boolean;
   useExactQuoteAmount?: boolean;
+  /** Override buy volume tracking; omission preserves the cashback-coin default. */
+  trackVolume?: boolean;
   fixedOutputAmount?: bigint;
 }
 
@@ -586,7 +588,7 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
   });
 
   // Build instruction data
-  const trackVolume = isCashbackCoin ? 1 : 0;
+  const trackVolume = (params.trackVolume ?? isCashbackCoin) ? 1 : 0;
   let data: Buffer;
 
   if (fixedOutputAmount !== undefined) {
