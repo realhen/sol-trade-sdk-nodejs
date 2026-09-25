@@ -32,6 +32,7 @@ describe('browser entrypoint', () => {
     const inputs = Object.keys(result.metafile!.inputs);
     expect(inputs.some((path) => /src\/(rpc|trading|nonce|perf)\//.test(path))).toBe(false);
     expect(inputs.some((path) => path.includes('@grpc') || path.includes('@matrixai'))).toBe(false);
+    expect(inputs.some((path) => path.includes('tweetnacl') || (/\(disabled\):.*(?:crypto|net|tls|os)$/.test(path)))).toBe(false);
     expect('Buffer' in context).toBe(false);
     expect('process' in context).toBe(false);
   });

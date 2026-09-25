@@ -81,6 +81,7 @@
     "url": "git+https://github.com/0xfnzero/sol-trade-sdk-nodejs.git"
   },
   "dependencies": {
+    "@noble/curves": "1.9.7",
     "@solana/web3.js": "^1.98.4",
     "bn.js": "^5.2.1",
     "borsh": "^0.7.0",

@@ -1,6 +1,6 @@
 import { Buffer } from 'buffer';
 import bs58 from 'bs58';
-import nacl from 'tweetnacl';
+import { ed25519 } from '@noble/curves/ed25519';
 import {
   AddressLookupTableAccount,
   PublicKey,
@@ -252,9 +252,9 @@ export async function sendPreparedTransactions(
     const signature = transaction.signatures[0]!;
     if (
       bs58.encode(signature) !== variant.expectedSignature ||
-      !nacl.sign.detached.verify(
-        transaction.message.serialize(),
+      !ed25519.verify(
         signature,
+        transaction.message.serialize(),
         transaction.message.staticAccountKeys[0]!.toBytes(),
       )
     ) {
