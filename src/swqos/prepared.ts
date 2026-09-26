@@ -11,7 +11,7 @@ import {
 } from '@solana/web3.js';
 import { buildTipInstruction, compileTransaction } from '../common/transaction';
 import { SwqosTransport, SwqosType, TradeType } from '../enums';
-import { ClientFactory } from './clients';
+import { ClientFactory, type HttpSendTimingEvent } from './clients';
 
 export interface HttpSenderRoute {
   id: string;
@@ -27,6 +27,11 @@ export interface HttpSenderRoute {
 export interface PreparedTransactionVariant {
   routeId: string;
   transaction: VersionedTransaction;
+}
+
+/** A request boundary marker containing only the caller's route ID and timing. */
+export interface PreparedTransactionTimingEvent extends HttpSendTimingEvent {
+  routeId: string;
 }
 
 export interface SignedTransactionVariant {
@@ -218,6 +223,10 @@ export async function sendPreparedTransactions(
     minContextSlot: number;
     timeoutMs?: number;
     lookupTables?: AddressLookupTableAccount[];
+    /** Keep this synchronous observer lightweight; exceptions are ignored.
+     * A response marker is HTTP arrival, not a transaction acceptance or confirmation.
+     */
+    onTiming?: (event: PreparedTransactionTimingEvent) => void;
   },
 ): Promise<{ routeId: string; accepted: boolean }[]> {
   validateRoutes(routes);
@@ -299,6 +308,9 @@ export async function sendPreparedTransactions(
             minContextSlot: options.minContextSlot,
             timeoutMs: options.timeoutMs,
             headers: route.headers,
+            onTiming: options.onTiming
+              ? (event) => options.onTiming!({ routeId: route.id, ...event })
+              : undefined,
           },
         );
         return { routeId: route.id, accepted: signature === expectedSignature };
