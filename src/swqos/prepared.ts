@@ -29,9 +29,11 @@ export interface PreparedTransactionVariant {
   transaction: VersionedTransaction;
 }
 
-/** A request boundary marker containing only the caller's route ID and timing. */
-export interface PreparedTransactionTimingEvent extends HttpSendTimingEvent {
+/** Per-route HTTP and submission result markers; accepted does not mean chain confirmation. */
+export interface PreparedTransactionTimingEvent {
   routeId: string;
+  phase: HttpSendTimingEvent['phase'] | 'accepted' | 'rejected';
+  at: number;
 }
 
 export interface SignedTransactionVariant {
@@ -225,6 +227,8 @@ export async function sendPreparedTransactions(
     lookupTables?: AddressLookupTableAccount[];
     /** Keep this synchronous observer lightweight; exceptions are ignored.
      * A response marker is HTTP arrival, not a transaction acceptance or confirmation.
+     * Accepted/rejected mark each route's parsed result without waiting for other routes.
+     * Rejected includes uncertain transport failures; it does not prove non-delivery.
      */
     onTiming?: (event: PreparedTransactionTimingEvent) => void;
   },
@@ -299,6 +303,18 @@ export async function sendPreparedTransactions(
   );
   return Promise.all(
     submissions.map(async ({ route, bytes, expectedSignature, client }) => {
+      const notifyResult = (accepted: boolean) => {
+        if (!options.onTiming) return;
+        try {
+          options.onTiming({
+            routeId: route.id,
+            phase: accepted ? 'accepted' : 'rejected',
+            at: performance.timeOrigin + performance.now(),
+          });
+        } catch {
+          // Observer failures must not turn acceptance into rejection.
+        }
+      };
       try {
         const signature = await client.sendTransaction(
           TradeType.Buy,
@@ -313,9 +329,12 @@ export async function sendPreparedTransactions(
               : undefined,
           },
         );
-        return { routeId: route.id, accepted: signature === expectedSignature };
+        const accepted = signature === expectedSignature;
+        notifyResult(accepted);
+        return { routeId: route.id, accepted };
       } catch {
         // A timeout or error cannot establish whether the provider received the bytes.
+        notifyResult(false);
         return { routeId: route.id, accepted: false };
       }
     }),
