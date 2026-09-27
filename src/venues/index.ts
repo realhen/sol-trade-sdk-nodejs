@@ -5,3 +5,4 @@ export * as meteoraDlmm from './meteora-dlmm';
 export * as meteoraDbc from './meteora-dbc';
 export * as meteoraDammV1 from './meteora-damm-v1';
 export { prepareTokenAccounts, type PrepareTokenAccountsParams } from './token-accounts';
+export { reconcileSwapBalances, type SwapBalanceObservations } from './swap-settlement';

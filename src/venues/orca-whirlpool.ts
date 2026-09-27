@@ -2,7 +2,7 @@
 import { Connection, PublicKey, type AccountMeta, type TransactionInstruction } from '@solana/web3.js';
 import BN from 'bn.js';
 import { Percentage } from '@orca-so/common-sdk';
-import { getTransferHook } from '@solana/spl-token';
+import { assertTokenCapabilities } from './token-capabilities';
 import { IGNORE_CACHE, ORCA_WHIRLPOOL_PROGRAM_ID, PDAUtil, PoolUtil, SwapUtils, TokenExtensionUtil, WhirlpoolContext, WhirlpoolIx, swapQuoteWithParams, type OracleData, type SwapQuote, type TickArray, type TokenExtensionContextForPool, type WhirlpoolData } from '@orca-so/whirlpools-sdk';
 
 export interface Snapshot {
@@ -21,7 +21,13 @@ export interface Quote {
   pool: PublicKey;
   inputMint: PublicKey;
   outputMint: PublicKey;
+  /** Requested maximum input, not a promise of the amount eventually debited. */
   amountIn: bigint;
+  estimatedAmountIn: bigint;
+  /** Whirlpool exact-input swaps can settle partially if execution reaches a price limit. */
+  executionMayPartiallyFill: true;
+  /** Active hooks are supported only with the caller-resolved accounts at build time. */
+  requiresTransferHookAccounts: { tokenA: boolean; tokenB: boolean };
   expectedAmountOut: bigint;
   minimumAmountOut: bigint;
   feeAmount: bigint;
@@ -39,6 +45,13 @@ export interface SwapAccounts {
 const U64_MAX = (1n << 64n) - 1n;
 function u64(value: bigint, name: string, positive = false): void {
   if (typeof value !== 'bigint' || value < (positive ? 1n : 0n) || value > U64_MAX) throw new Error(`${name} must fit ${positive ? 'positive ' : ''}u64`);
+}
+function validateTokens(snapshot: Snapshot) {
+  const policy = { venue: 'Orca Whirlpool', transferFee: true, transferHook: 'resolved-accounts' as const };
+  return {
+    tokenA: assertTokenCapabilities(snapshot.tokenExtensionCtx.tokenMintWithProgramA, snapshot.poolData.tokenMintA, policy),
+    tokenB: assertTokenCapabilities(snapshot.tokenExtensionCtx.tokenMintWithProgramB, snapshot.poolData.tokenMintB, policy),
+  };
 }
 function direction(snapshot: Snapshot, inputMint: PublicKey): boolean {
   if (inputMint.equals(snapshot.poolData.tokenMintA)) return true;
@@ -67,11 +80,20 @@ export async function prepare(connection: Connection, pool: PublicKey): Promise<
   if (PoolUtil.isInitializedWithAdaptiveFee(poolData) && !oracleData) throw new Error('Adaptive-fee oracle unavailable');
   const blockTimestamp = await connection.getBlockTime(slot);
   if (blockTimestamp === null) throw new Error('Chain timestamp unavailable');
-  return { pool, programId: context.program.programId, program: context.program, poolData, tickArraysAtoB, tickArraysBtoA, tokenExtensionCtx, oracleData, blockTimestamp };
+  const snapshot = { pool, programId: context.program.programId, program: context.program, poolData, tickArraysAtoB, tickArraysBtoA, tokenExtensionCtx, oracleData, blockTimestamp };
+  validateTokens(snapshot);
+  return snapshot;
 }
 
-/** Pure quote over a prepared snapshot. Insufficient tick coverage fails rather than giving a partial fill. */
+/**
+ * Pure quote; rejects a partial estimate or insufficient tick coverage at this snapshot.
+ * This local check is not an on-chain fill-or-kill guarantee. Whirlpool exact-input
+ * execution can consume less than amountIn at a price limit after state changes;
+ * minimumAmountOut remains the enforced output floor. Read settlement from receipts.
+ */
 export function quote(snapshot: Snapshot, inputMint: PublicKey, amountIn: bigint, slippageBps: number): Quote {
+  const capabilities = validateTokens(snapshot);
+  if (PoolUtil.isInitializedWithAdaptiveFee(snapshot.poolData) && (!snapshot.oracleData || !snapshot.oracleData.whirlpool.equals(snapshot.pool))) throw new Error('Adaptive-fee oracle unavailable or mismatched');
   u64(amountIn, 'amountIn', true);
   if (!Number.isInteger(slippageBps) || slippageBps < 0 || slippageBps > 10000) throw new Error('slippageBps must be an integer from 0 to 10000');
   const aToB = direction(snapshot, inputMint);
@@ -87,11 +109,12 @@ export function quote(snapshot: Snapshot, inputMint: PublicKey, amountIn: bigint
   if (expectedAmountOut <= 0n) throw new Error('Swap output rounds to zero');
   const minimumAmountOut = expectedAmountOut * BigInt(10000 - slippageBps) / 10000n;
   swap.otherAmountThreshold = new BN(minimumAmountOut.toString());
-  return { pool: snapshot.pool, inputMint, outputMint: aToB ? snapshot.poolData.tokenMintB : snapshot.poolData.tokenMintA, amountIn, expectedAmountOut, minimumAmountOut, feeAmount: BigInt(swap.estimatedFeeAmount.toString()), swap };
+  return { estimatedAmountIn: BigInt(swap.estimatedAmountIn.toString()), executionMayPartiallyFill: true, requiresTransferHookAccounts: { tokenA: capabilities.tokenA.transferHookProgram !== null, tokenB: capabilities.tokenB.transferHookProgram !== null }, pool: snapshot.pool, inputMint, outputMint: aToB ? snapshot.poolData.tokenMintB : snapshot.poolData.tokenMintA, amountIn, expectedAmountOut, minimumAmountOut, feeAmount: BigInt(swap.estimatedFeeAmount.toString()), swap };
 }
 
 /** Builds a single unsigned swap-v2 instruction; token-account setup and submission remain caller-owned. */
 export function buildSwapInstruction(snapshot: Snapshot, quote: Quote, accounts: SwapAccounts): TransactionInstruction {
+  const capabilities = validateTokens(snapshot);
   if (!quote.pool.equals(snapshot.pool)) throw new Error('Quote belongs to a different pool');
   const aToB = direction(snapshot, quote.inputMint);
   const data = snapshot.poolData;
@@ -102,9 +125,8 @@ export function buildSwapInstruction(snapshot: Snapshot, quote: Quote, accounts:
   u64(minimum, 'minimumAmountOut');
   if (minimum < quote.minimumAmountOut) throw new Error('Explicit minimumAmountOut cannot weaken the quoted floor');
   const { tokenMintWithProgramA: mintA, tokenMintWithProgramB: mintB } = snapshot.tokenExtensionCtx;
-  for (const [mint, metas] of [[mintA, accounts.tokenTransferHookAccountsA], [mintB, accounts.tokenTransferHookAccountsB]] as const) {
-    const hook = getTransferHook(mint);
-    if (hook && !hook.programId.equals(PublicKey.default) && !metas?.length) throw new Error('Transfer-hook accounts must be prepared before building');
+  for (const [capability, metas] of [[capabilities.tokenA, accounts.tokenTransferHookAccountsA], [capabilities.tokenB, accounts.tokenTransferHookAccountsB]] as const) {
+    if (capability.transferHookProgram && !metas?.length) throw new Error('Transfer-hook accounts must be prepared before building');
   }
   return WhirlpoolIx.swapV2Ix(snapshot.program, {
     ...quote.swap, amount: new BN(quote.amountIn.toString()), otherAmountThreshold: new BN(minimum.toString()),

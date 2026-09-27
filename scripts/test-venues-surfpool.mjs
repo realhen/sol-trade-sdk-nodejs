@@ -4,11 +4,14 @@ import { Connection, PublicKey, Keypair, TransactionMessage, TransactionInstruct
 import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
 const venues = await import(process.env.VENUES_BROWSER ? '../dist/venues/browser.mjs' : '../dist/venues/index.mjs');
 const endpoint = process.env.SURFPOOL_RPC_URL ?? 'http://127.0.0.1:8999';
+const localFetch = (input, options) => fetch(input, { ...options, redirect: 'error' });
+assert.equal(new URL(endpoint).protocol, 'http:', 'Local execution requires HTTP loopback');
+assert(!new URL(endpoint).username && !new URL(endpoint).password, 'Local test RPC must not contain credentials');
 const url = new URL(endpoint);
 assert(['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname), 'Execution tests require loopback RPC');
-const connection = new Connection(endpoint, 'confirmed');
+const connection = new Connection(endpoint, { commitment: 'confirmed', fetch: localFetch });
 async function rpc(method, params = []) {
-  const response = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
+  const response = await localFetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
   const body = await response.json();
   if (body.error) throw new Error(`${method}: ${JSON.stringify(body.error)}`);
   return body.result;
@@ -20,6 +23,8 @@ const markets = [
   ['meteoraDlmm', 'GkPsJaMgqqEg1g7c3yzzubWy488eCfvZoPEUAz96zJeH'],
   ['meteoraDbc', process.env.DBC_TEST_POOL ?? '9D1ByLbUU8S5JSik4oDDdCHntt7PEaootedWDN94kjGh'],
   ['meteoraDammV1', 'B1AdQ85N2mJ2xtMg9bgThhsPoA6T3M26rt4TChWSiPpr'],
+  ['meteoraDammV1', '32D4zRxNc1EssbJieVHfPhZM3rH6CzfUPrWUuWxD9prG'], // USDC/USDT stable
+  ['meteoraDammV1', 'HcjZvfeSNJbNkfLD4eEcRBr96AD3w1GpmMppaeRZf7ur'], // SOL/mSOL depeg
 ];
 function tokens(name, p) {
   if (name === 'raydiumClmm') return [p.poolInfo.mintA, p.poolInfo.mintB].map(m => [new PublicKey(m.address), new PublicKey(m.programId)]);
@@ -68,9 +73,11 @@ for (const [name, address] of markets) {
     const received = BigInt((await connection.getTokenAccountBalance(accounts.outputTokenAccount)).value.amount);
     assert.equal(spent, amountIn, `${name} must consume exact input`);
     assert(received >= q.minimumAmountOut, `${name} output must satisfy minimum`);
-    const result = { venue: name, direction: reverse ? 'BtoA' : 'AtoB', input: amountIn.toString(), quotedOutput: (q.expectedAmountOut ?? q.amountOut).toString(), actualOutput: received.toString(), minimumOutput: q.minimumAmountOut.toString(), computeUnits: simulation.value.unitsConsumed, signature };
+    const settlement = venues.reconcileSwapBalances({ requestedAmountIn: amountIn, minimumAmountOut: q.minimumAmountOut, inputBalanceBefore: amountIn, inputBalanceAfter: amountIn - spent, outputBalanceBefore: 0n, outputBalanceAfter: received });
+    assert(settlement.fullyFilled);
+    const result = { venue: name, pool: address, direction: reverse ? 'BtoA' : 'AtoB', input: amountIn.toString(), quotedOutput: (q.expectedAmountOut ?? q.amountOut).toString(), actualOutput: received.toString(), minimumOutput: q.minimumAmountOut.toString(), computeUnits: simulation.value.unitsConsumed, signature };
     results.push(result); console.log(JSON.stringify(result));
   }
 }
-assert.equal(results.length, process.env.VENUE ? 2 : 10);
-console.log(`Passed ${results.length} local swaps across ${process.env.VENUE ? 1 : 5} markets.`);
+assert.equal(results.length, markets.filter(([name]) => !process.env.VENUE || name === process.env.VENUE).length * 2);
+console.log(`Passed ${results.length} local swaps across ${new Set(results.map(r => r.venue)).size} venues.`);
