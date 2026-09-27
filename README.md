@@ -1,3 +1,9 @@
+## Version 1 browser transactions (0.4.0)
+
+Pass `version: 1` to `buildSwapTransaction` or use `compileV1Transaction` for v1 transactions with explicit compute and loaded-account-data limits. `TransactionV1` encodes, signs and validates canonical wire bytes through Solana Kit 8.3.0. It enforces the 4,096-byte envelope, 12-signature, 64-account and 64-instruction limits. V1 expands account addresses rather than using lookup tables. Prepared sender variants preserve the transaction version and resource configuration, changing only the configured tip.
+
+`upgradeTransactionToV1` converts unsigned legacy/v0 transactions using caller-supplied lookup tables. Existing signatures are rejected. Compute-budget instructions become v1 configuration; a positive legacy compute-unit price requires an explicit compute-unit limit to preserve the total priority fee. Existing SDK callers retain the v0 default for compatibility; applications can require v1 at their signing and submission boundaries. Use Surfpool 1.5 or newer for local v1 validation.
+
 ## Browser HTTP support in this fork (0.2.0)
 
 Import `sol-trade-sdk/browser` for instruction builders, shared transaction assembly, provider HTTP clients, and prepared multi-sender submission. Native gRPC/QUIC implementations and their dependencies have been removed. Temporal, BlockRazor, and Astralane default to HTTP; native transport requests and native-only providers fail explicitly.
