@@ -1,3 +1,64 @@
+## Additional venue adapters in this fork (0.4.0)
+
+Raydium CLMM, Orca Whirlpool, Meteora DLMM, Meteora Dynamic Bonding Curve (DBC), and Meteora DAMM v1 now have keyless exact-input adapters. Both swap directions use the official venue SDK's quote math. DAMM v1 includes constant-product and stable/depeg math. These APIs are separate from the legacy `TradingClient.buy/sell` facade.
+
+```ts
+// Node (ESM or require); also available as `venues` from the root entrypoint:
+import { raydiumClmm, prepareTokenAccounts } from 'sol-trade-sdk/venues';
+// Browser/extension: import the same names from 'sol-trade-sdk/venues/browser'.
+
+const state = await raydiumClmm.prepare(connection, poolAddress); // explicit RPC phase
+const quote = raydiumClmm.quote(state, inputMint, 100_000n, 100); // 1% slippage
+const accounts = prepareTokenAccounts({
+  owner: walletPublicKey, inputMint, outputMint: quote.outputMint,
+  inputTokenProgram, outputTokenProgram, amountIn: quote.amountIn,
+  // Optional and explicit for native SOL pairs:
+  // wrapNativeInput: true, unwrapNativeOutput: true,
+});
+const swap = raydiumClmm.buildSwapInstruction(state, quote, {
+  payer: walletPublicKey,
+  inputTokenAccount: accounts.inputTokenAccount,
+  outputTokenAccount: accounts.outputTokenAccount,
+});
+const instructions = [...accounts.setupInstructions, swap, ...accounts.cleanupInstructions];
+// Feed instructions into buildSwapTransaction / compileTransaction from sol-trade-sdk/browser.
+// The application owns blockhash/nonce, optional lookup tables, signing and submission.
+```
+
+All raw amounts are `bigint`; slippage is an integer number of basis points from 0 through 10,000. Setting 10,000 explicitly removes the minimum-output protection. ATA preparation handles each mint's token program and wraps SOL without converting through floating-point numbers. `unwrapNativeOutput` closes the output WSOL ATA and returns its **entire existing balance** to the owner; it is off by default. The swap builders themselves never create, fund, or close token accounts.
+
+| Namespace | Quote API | Instruction API |
+| --- | --- | --- |
+| `raydiumClmm`, `orcaWhirlpool` | `quote(state, inputMint, amountIn, slippageBps)` | `buildSwapInstruction(state, quote, { payer, inputTokenAccount, outputTokenAccount })` |
+| `meteoraDlmm` | `quote(state, inputMint, amountIn, slippageBps)` | `await buildSwapInstructions(state, { quote, owner, inputTokenAccount, outputTokenAccount, minimumAmountOut: quote.minimumAmountOut })` |
+| `meteoraDbc`, `meteoraDammV1` | `quote(state, { inputMint, outputMint, amountIn, slippageBps })` | `buildSwapInstructions(state, { owner, inputMint, outputMint, inputTokenAccount, outputTokenAccount, amountIn, minimumAmountOut })` |
+
+Each namespace exposes `prepare(connection, poolAddress)`. Preparation reads pool, mint, fee, clock and liquidity accounts. Quote and instruction construction make no RPC calls; DLMM's async instruction builder uses its local Anchor coder only. No adapter signs, broadcasts, or silently refreshes state. Refresh preparation before reusing stale data, or replace the exposed official parsed state from authoritative account subscriptions. `meteoraDlmm.prepareFromSnapshot` accepts cached SDK pool/bin-array state. Caller-supplied snapshots must be trusted and internally consistent; preparation is not an atomic multi-account snapshot.
+
+Quotes fail when prepared liquidity cannot consume the complete input. Raydium and Orca expose `expectedAmountOut`; Meteora adapters expose `amountOut`. These are raw user-received token amounts, including supported transfer fees. Fee denominations are documented on each quote type. Limited tick/bin coverage can require a fresh/wider snapshot; DLMM preparation accepts `binArraysPerDirection` (default four). No aggregator or SOL-to-USDC intermediary route is inserted.
+
+Token features have explicit boundaries: DBC accepts classic SPL and metadata-only Token-2022 mints; DLMM also accepts transfer-fee mints but rejects transfer hooks and permissioned/disabled pools. Orca accepts caller-prepared transfer-hook account metas and uses official transfer-fee/adaptive-fee calculations. Raydium uses official Token-2022 transfer-fee math. Unsupported mints/pool modes can still be rejected by the deployed program; successful fixtures do not imply every token extension combination is supported.
+
+`sol-trade-sdk/venues/browser` is a separate, fully bundled entrypoint (minified, with a source map) with lexical Buffer/process shims. It does not install globals or add the venue dependencies to the existing `sol-trade-sdk/browser` entrypoint. The package smoke test loads it with string code generation disabled and no Node globals. Node uses the official dependencies, with DLMM/Anchor bundled where needed to repair upstream ESM resolution.
+
+Validation commands:
+
+```sh
+npm ci
+npm test
+npm run typecheck
+npm run lint
+npm run build
+npm run test:venues:package
+# Start a separate Surfpool backed by your mainnet RPC on 127.0.0.1:8999, then:
+npm run test:venues:surfpool
+VENUES_BROWSER=1 npm run test:venues:surfpool
+```
+
+The local execution test verifies the server identifies as Surfpool and requires a loopback address. It uses generated test wallets and local balance cheatcodes, executes both directions on five public pools, verifies exact input and minimum output, and simulates deliberately excessive output floors. It never uses a real wallet. Public-state fixtures make ordinary tests independent of RPC availability. Local fork execution is not a funded-mainnet test.
+
+The pinned official SDK dependency graph retains upstream security advisories (including `bigint-buffer` and Anchor's TOML loader). Compatible dependency patches are recorded in this repository's overrides; npm does not apply dependency-package overrides in a consuming application, so consumers should review/mirror them in their own lockfile. No incompatible `npm audit fix --force` downgrades are applied.
+
 ## Browser HTTP support in this fork (0.2.0)
 
 Import `sol-trade-sdk/browser` for instruction builders, shared transaction assembly, provider HTTP clients, and prepared multi-sender submission. Native gRPC/QUIC implementations and their dependencies have been removed. Temporal, BlockRazor, and Astralane default to HTTP; native transport requests and native-only providers fail explicitly.

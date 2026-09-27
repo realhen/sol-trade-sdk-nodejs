@@ -2817,3 +2817,6 @@ export * from './trading/factory';
 
 // Re-export middleware module
 export * from './middleware/traits';
+
+/** Additional prepared, keyless venue adapters (also available from sol-trade-sdk/venues). */
+export * as venues from "./venues";
