@@ -24,6 +24,7 @@ describe('browser entrypoint', () => {
     const exports = runInNewContext(`${result.outputFiles[0]!.text}\nTradeSdk`, context);
     expect(exports.prepareTransactionVariants).toBeTypeOf('function');
     expect(exports.sendPreparedTransactions).toBeTypeOf('function');
+    expect(exports.prepareSignedTransactionSubmission).toBeTypeOf('function');
     expect(exports.buildSwapTransaction).toBeTypeOf('function');
     expect(exports.swqos.ClientFactory.createClient).toBeTypeOf('function');
     const mint = exports.constants.WSOL_TOKEN_ACCOUNT;

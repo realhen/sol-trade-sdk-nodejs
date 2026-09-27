@@ -27,6 +27,7 @@ import {
   assertSenderVariants,
   prepareTransactionVariants,
   sendPreparedTransactions,
+  prepareSignedTransactionSubmission,
   type HttpSenderRoute,
   MAX_HTTP_SENDER_ROUTES,
 } from "../swqos/prepared";
@@ -870,4 +871,131 @@ it("submits to normalized root and full provider endpoints without double paths"
   expect(endpoint.received.map((request) => request.path).sort()).toEqual([
     "/api/v2/submit-batch?region=test", "/api/v2/submit?region=test", "/rpc",
   ]);
+});
+
+
+describe("signed submission preparation barrier", () => {
+  it("prepares all wallets without fetch and dispatches each once in the same turn", async () => {
+    const routes = makeRoutes();
+    const variants = signed(prepareTransactionVariants(makeBase(), [], routes));
+    const releases: (() => void)[] = [];
+    const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(
+      (url) =>
+        new Promise<Response>((resolve) =>
+          releases.push(() =>
+            resolve(
+              new Response(
+                JSON.stringify({
+                  jsonrpc: "2.0",
+                  id: 1,
+                  result:
+                    variants[String(url).endsWith("/rpc") ? 0 : 1]!
+                      .expectedSignature,
+                }),
+              ),
+            ),
+          ),
+        ),
+    );
+    const events: string[] = [];
+    const dispatches = Array.from({ length: 3 }, () =>
+      prepareSignedTransactionSubmission(routes, variants, {
+        minContextSlot: 42,
+        onTiming: (event) => events.push(event.phase),
+      }),
+    );
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+    const pending = dispatches.map((dispatch) => dispatch());
+    // All six requests start before any response or microtask resumes.
+    expect(fetcher).toHaveBeenCalledTimes(6);
+    expect(events).toEqual(Array(6).fill("dispatch"));
+    expect(() => dispatches[0]!()).toThrow(/already been dispatched/);
+    expect(fetcher).toHaveBeenCalledTimes(6);
+    releases.forEach((release) => release());
+    expect(
+      (await Promise.all(pending)).flat().every((result) => result.accepted),
+    ).toBe(true);
+    expect(() => dispatches[0]!()).toThrow(/already been dispatched/);
+    expect(fetcher).toHaveBeenCalledTimes(6);
+  });
+
+  it("retains validated bytes, headers, route identity and options despite caller mutation", async () => {
+    const endpoint = await localEndpoint();
+    const routes = makeRoutes(endpoint.url);
+    const variants = signed(prepareTransactionVariants(makeBase(), [], routes));
+    const originalBytes = variants.map((variant) => variant.signedBase64);
+    const events: string[] = [];
+    const options = {
+      minContextSlot: 123,
+      timeoutMs: 2000,
+      onTiming: (event: { phase: string }) => {
+        events.push(event.phase);
+      },
+    };
+    const dispatch = prepareSignedTransactionSubmission(
+      routes,
+      variants,
+      options,
+    );
+    routes[0]!.url = "http://127.0.0.1:1/never";
+    routes[1]!.id = "changed";
+    routes[1]!.headers!["x-test-auth"] = "changed";
+    routes[1]!.tipLamports = 999999;
+    variants[0]!.signedBase64 = "invalid";
+    variants[1]!.expectedSignature = "invalid";
+    options.minContextSlot = -1;
+    options.timeoutMs = 0;
+    options.onTiming = () => {
+      throw new Error("changed observer");
+    };
+    routes.length = 0;
+    variants.length = 0;
+    expect(await dispatch()).toEqual([
+      { routeId: "rpc", accepted: true },
+      { routeId: "relay", accepted: true },
+    ]);
+    for (const request of endpoint.received) {
+      const index = request.path === "/rpc" ? 0 : 1;
+      expect(request.bytes.toString("base64")).toBe(originalBytes[index]);
+      expect(request.body.params[1].minContextSlot).toBe(123);
+      if (index === 1) expect(request.headers["x-test-auth"]).toBe("test-only");
+    }
+    expect(events.filter((phase) => phase === "dispatch")).toHaveLength(2);
+  });
+
+  it("rejects invalid signatures and configuration synchronously before any wallet dispatch", () => {
+    const fetcher = vi.spyOn(globalThis, "fetch");
+    const routes = makeRoutes();
+    const variants = signed(prepareTransactionVariants(makeBase(), [], routes));
+    expect(() =>
+      prepareSignedTransactionSubmission(routes, variants, {
+        minContextSlot: -1,
+      }),
+    ).toThrow(/options/);
+    variants[1]!.expectedSignature = variants[0]!.expectedSignature;
+    expect(() =>
+      prepareSignedTransactionSubmission(routes, variants, {
+        minContextSlot: 1,
+      }),
+    ).toThrow(/signature/);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("never retries a failed one-shot dispatch", async () => {
+    const routes = makeRoutes();
+    const variants = signed(prepareTransactionVariants(makeBase(), [], routes));
+    const fetcher = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error("uncertain delivery"));
+    const dispatch = prepareSignedTransactionSubmission(routes, variants, {
+      minContextSlot: 1,
+    });
+    expect(await dispatch()).toEqual([
+      { routeId: "rpc", accepted: false },
+      { routeId: "relay", accepted: false },
+    ]);
+    expect(() => dispatch()).toThrow(/already been dispatched/);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
 });
