@@ -1,12 +1,14 @@
 export {
   prepareJupiterRoute,
   prepareJupiterSellForSolValue,
+  prepareJupiterSellForQuoteValue,
   assertRouterTradeFresh,
   decodeJupiterRouteInstruction,
 } from "./jupiter";
 export type {
   PrepareJupiterRouteOptions,
   PrepareJupiterSellForSolValueOptions,
+  PrepareJupiterSellForQuoteValueOptions,
   PreparedRouterTrade,
   RouterLeg,
   JupiterDecodedStep,
@@ -18,3 +20,5 @@ export type {
   JupiterFillExpectation,
   NormalizedJupiterFill,
 } from "./settlement";
+
+export { discoverPoolQuoteMint } from "./pool-identity";

@@ -8,7 +8,10 @@ import {
 } from "@solana/spl-token";
 import bs58 from "bs58";
 import { Buffer } from "buffer";
-import { decodeJupiterRouteInstruction } from "./jupiter";
+import {
+  assertDirectJupiterRoute,
+  decodeJupiterRouteInstruction,
+} from "./jupiter";
 
 export interface JupiterFillExpectation {
   owner: string;
@@ -18,6 +21,8 @@ export interface JupiterFillExpectation {
   outputTokenProgram: string;
   amountIn: string;
   minimumAmountOut: string;
+  /** Persist with the route so receipt validation retains the no-conversion policy. */
+  directPairOnly?: boolean;
   /** Exact base64 swap instruction returned by the trusted route preparation. */
   swapInstructionData?: string;
 }
@@ -166,6 +171,12 @@ export function normalizeJupiterFill(
     fail("invalid route base58 data");
   }
   const decoded = decodeJupiterRouteInstruction(data);
+  if (
+    expected.directPairOnly !== undefined &&
+    typeof expected.directPairOnly !== "boolean"
+  )
+    fail("invalid direct-pair policy");
+  if (expected.directPairOnly) assertDirectJupiterRoute(decoded);
   if (decoded.amountIn !== budget || decoded.minimumAmountOut !== floor)
     fail("route amounts do not match expected fill");
   if (expected.swapInstructionData !== undefined) {
