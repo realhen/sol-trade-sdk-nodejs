@@ -4,10 +4,15 @@ import {
   SystemProgram,
   AddressLookupTableAccount,
 } from "@solana/web3.js";
-import { MintLayout, TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import {
+  MintLayout,
+  TOKEN_PROGRAM_ID,
+  getAssociatedTokenAddressSync,
+  NATIVE_MINT,
+} from "@solana/spl-token";
 import live from "./fixtures/sol-usdc-build.json";
 import * as router from "../index";
-function sellFixture(amount: bigint, output: bigint) {
+function sellFixture(amount: bigint, output: bigint, quoteMint?: PublicKey) {
   const b = structuredClone(live);
   const a = b.swapInstruction.accounts;
   const pairs = [
@@ -46,11 +51,33 @@ function sellFixture(amount: bigint, output: bigint) {
     i.programId.startsWith("AToken"),
   );
   b.cleanupInstruction = null;
+  if (quoteMint) {
+    const oldAta = getAssociatedTokenAddressSync(
+      NATIVE_MINT,
+      SystemProgram.programId,
+      true,
+    ).toBase58();
+    const newAta = getAssociatedTokenAddressSync(
+      quoteMint,
+      SystemProgram.programId,
+      true,
+    ).toBase58();
+    return JSON.parse(JSON.stringify(b), (_, value) =>
+      value === NATIVE_MINT.toBase58()
+        ? quoteMint.toBase58()
+        : value === oldAta
+          ? newAta
+          : value,
+    );
+  }
   return b;
 }
-function options(quote: (x: bigint) => bigint = (x) => x * 2n) {
+function options(
+  quote: (x: bigint) => bigint = (x) => x * 2n,
+  quoteMint?: PublicKey,
+) {
   const amounts: bigint[] = [];
-  const sample = sellFixture(1000n, 2000n);
+  const sample = sellFixture(1000n, 2000n, quoteMint);
   const owner = SystemProgram.programId;
   const connection: any = {
     getAccountInfo: async () => {
@@ -99,16 +126,39 @@ function options(quote: (x: bigint) => bigint = (x) => x * 2n) {
       slippageBps: 100,
       maximumInputAmount: 1000n,
       targetLamports: 123n,
-      unwrapNativeOutput: true,
+      unwrapNativeOutput: !quoteMint,
       now: () => 1000,
       transport: (async (url: string) => {
         const a = BigInt(new URL(url).searchParams.get("amount")!);
         amounts.push(a);
-        return new Response(JSON.stringify(sellFixture(a, quote(a))));
+        return new Response(
+          JSON.stringify(sellFixture(a, quote(a), quoteMint)),
+        );
       }) as typeof fetch,
     },
   };
 }
+it("sizes a funded token sale in arbitrary quote-token units with no conversion", async () => {
+  const quote = new PublicKey("Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB");
+  const { args, amounts } = options(undefined, quote);
+  const trade = await router.prepareJupiterSellForQuoteValue({
+    ...args,
+    targetAmount: 123n,
+    directPairOnly: true,
+  });
+  expect(trade.amountIn).toBe(61n);
+  expect(trade.quotedAmountOut).toBe(122n);
+  expect(trade.outputMint.equals(quote)).toBe(true);
+  expect(trade.directPairOnly).toBe(true);
+  expect(trade.wrapNativeInput || trade.unwrapNativeOutput).toBe(false);
+  expect(amounts.every((n) => n <= args.maximumInputAmount)).toBe(true);
+  expect(trade.instructions.at(-1)!.programId.toBase58()).toBe(
+    "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+  );
+  await expect(router.prepareJupiterSellForSolValue(args)).rejects.toThrow(
+    /must be SOL/,
+  );
+});
 it("sizes an exact-in sell under the requested SOL value and holding limit", async () => {
   const { args, amounts } = options();
   const t = await router.prepareJupiterSellForSolValue(args);

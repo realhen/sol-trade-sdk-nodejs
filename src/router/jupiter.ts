@@ -23,6 +23,7 @@ import type {
   PreparedRouterTrade,
   PrepareJupiterRouteOptions,
   PrepareJupiterSellForSolValueOptions,
+  PrepareJupiterSellForQuoteValueOptions,
   RouterLeg,
 } from "./types";
 
@@ -216,6 +217,18 @@ export function decodeJupiterRouteInstruction(
     steps,
   };
 }
+
+/** Enforce the direct-pair policy on decoded instruction bytes, not provider JSON. */
+export function assertDirectJupiterRoute(decoded: DecodedJupiterRoute): void {
+  const step = decoded.steps[0];
+  requireThat(
+    decoded.steps.length === 1 &&
+      step?.bps === 10000 &&
+      step.inputIndex === 0 &&
+      step.outputIndex === 1,
+    "direct pair requires exactly one full-allocation swap leg",
+  );
+}
 function instruction(value: unknown, owner: PublicKey): TransactionInstruction {
   const x = record(value);
   const keys = array(x.accounts, 256).map((a) => {
@@ -365,6 +378,11 @@ export async function prepareJupiterRoute(
 ): Promise<PreparedRouterTrade> {
   positive(options.amountIn);
   slippage(options.slippageBps);
+  const directPairOnly = options.directPairOnly ?? false;
+  requireThat(
+    typeof directPairOnly === "boolean",
+    "invalid direct-pair policy",
+  );
   const now = options.now ?? Date.now;
   const preparedAtMs = now(),
     ttl = options.maxAgeMs ?? 10000;
@@ -432,6 +450,7 @@ export async function prepareJupiterRoute(
   const swap = instruction(body.swapInstruction, options.owner);
   requireThat(swap.programId.equals(PROGRAM), "unexpected swap program");
   const decoded = decodeJupiterRouteInstruction(swap.data);
+  if (directPairOnly) assertDirectJupiterRoute(decoded);
   requireThat(
     decoded.amountIn === options.amountIn &&
       decoded.quotedAmountOut === quotedAmountOut &&
@@ -560,6 +579,15 @@ export async function prepareJupiterRoute(
     };
   });
   const indices = new Map<number, string>([[0, inputMint.toBase58()]]);
+  if (directPairOnly) {
+    requireThat(
+      routeLegs.length === 1 &&
+        routeLegs[0]!.bps === 10000 &&
+        routeLegs[0]!.inputMint === inputMint.toBase58() &&
+        routeLegs[0]!.outputMint === outputMint.toBase58(),
+      "direct pair route metadata does not match requested mints",
+    );
+  }
   const spent = new Map<number, number>();
   const produced = new Set<number>([0]);
   for (let i = 0; i < routeLegs.length; i++) {
@@ -712,6 +740,7 @@ export async function prepareJupiterRoute(
     unwrapNativeOutput,
     allowsPartialFill: decoded.steps.some((s) => s.allowsPartialFill === true),
     routeLegs,
+    directPairOnly,
     instructions,
     lookupTables,
   };
@@ -731,22 +760,34 @@ export async function prepareJupiterRoute(
 export async function prepareJupiterSellForSolValue(
   options: PrepareJupiterSellForSolValueOptions,
 ): Promise<PreparedRouterTrade> {
-  positive(options.maximumInputAmount);
-  positive(options.targetLamports);
   requireThat(
     normalize(options.outputMint).equals(NATIVE_MINT),
     "sell-value output must be SOL",
   );
+  return prepareJupiterSellForQuoteValue({
+    ...options,
+    targetAmount: options.targetLamports,
+  });
+}
+
+/** Size an exact-input sale to an expected amount of any output mint. At most
+ * eight validated preparations; bounds holdings and expected output, not the
+ * eventual fill. Actual proceeds may differ within swap slippage.
+ */
+export async function prepareJupiterSellForQuoteValue(
+  options: PrepareJupiterSellForQuoteValueOptions,
+): Promise<PreparedRouterTrade> {
+  positive(options.maximumInputAmount);
+  positive(options.targetAmount);
   const toleranceBps = options.targetToleranceBps ?? 10;
   requireThat(
     Number.isInteger(toleranceBps) && toleranceBps >= 0 && toleranceBps <= 100,
     "invalid sell target tolerance",
   );
-  const tolerance = (options.targetLamports * BigInt(toleranceBps)) / 10000n;
-  const lowerTarget =
-    options.targetLamports - (tolerance > 0n ? tolerance : 1n);
+  const tolerance = (options.targetAmount * BigInt(toleranceBps)) / 10000n;
+  const lowerTarget = options.targetAmount - (tolerance > 0n ? tolerance : 1n);
   const acceptable = (trade: PreparedRouterTrade) =>
-    trade.quotedAmountOut <= options.targetLamports &&
+    trade.quotedAmountOut <= options.targetAmount &&
     trade.quotedAmountOut >= lowerTarget;
   let highAmount = options.maximumInputAmount;
   const maximum = await prepareJupiterRoute({
@@ -755,7 +796,7 @@ export async function prepareJupiterSellForSolValue(
   });
   if (acceptable(maximum)) return maximum;
   requireThat(
-    maximum.quotedAmountOut >= options.targetLamports,
+    maximum.quotedAmountOut >= options.targetAmount,
     "target exceeds quoted holdings output",
   );
   let highOutput = maximum.quotedAmountOut,
@@ -768,7 +809,7 @@ export async function prepareJupiterSellForSolValue(
     );
     let candidate =
       lowAmount +
-      ((options.targetLamports - lowOutput) * (highAmount - lowAmount)) /
+      ((options.targetAmount - lowOutput) * (highAmount - lowAmount)) /
         (highOutput - lowOutput);
     if (candidate <= lowAmount) candidate = lowAmount + 1n;
     if (candidate >= highAmount) candidate = highAmount - 1n;
@@ -781,7 +822,7 @@ export async function prepareJupiterSellForSolValue(
       trade.quotedAmountOut >= lowOutput && trade.quotedAmountOut <= highOutput,
       "nonmonotonic sell quotes; cannot converge",
     );
-    if (trade.quotedAmountOut > options.targetLamports) {
+    if (trade.quotedAmountOut > options.targetAmount) {
       highAmount = candidate;
       highOutput = trade.quotedAmountOut;
     } else {

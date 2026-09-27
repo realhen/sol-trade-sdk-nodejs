@@ -1,6 +1,6 @@
 {
   "name": "sol-trade-sdk",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "High-performance Solana trading SDK with multi-protocol support",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
@@ -93,7 +93,8 @@
     "test:venues:partial": "node scripts/test-orca-partial-surfpool.mjs",
     "test:non-sol:surfpool": "node scripts/test-non-sol-pairs-surfpool.mjs",
     "test:router:package": "node scripts/test-router-package.mjs",
-    "test:router:surfpool": "node scripts/test-router-surfpool.mjs"
+    "test:router:surfpool": "node scripts/test-router-surfpool.mjs",
+    "test:router:funded": "node scripts/test-funded-quote-surfpool.mjs"
   },
   "keywords": [
     "solana",
