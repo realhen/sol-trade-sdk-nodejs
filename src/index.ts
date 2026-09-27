@@ -2857,3 +2857,6 @@ export * as venues from "./venues";
 
 /** Validated unsigned Jupiter routes and executed-fill normalization. */
 export * as router from "./router";
+
+export { prepareSignedTransactionSubmission } from "./swqos/prepared";
+export type { SignedTransactionSubmissionOptions, PreparedSignedTransactionSubmission } from "./swqos/prepared";

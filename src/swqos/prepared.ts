@@ -55,13 +55,6 @@ export interface PreparedTransactionTimingEvent {
   at: number;
 }
 
-/** Per-route HTTP and submission result markers; accepted does not mean chain confirmation. */
-export interface PreparedTransactionTimingEvent {
-  routeId: string;
-  phase: HttpSendTimingEvent['phase'] | 'accepted' | 'rejected';
-  at: number;
-}
-
 export interface SignedTransactionVariant {
   routeId: string;
   signedBase64: string;
@@ -69,8 +62,8 @@ export interface SignedTransactionVariant {
 }
 
 /** Bounded fan-out supports all HTTP providers and multiple credentials per provider. */
-export { MAX_HTTP_SENDER_ROUTES } from './metadata';
-import { MAX_HTTP_SENDER_ROUTES } from './metadata';
+export { MAX_HTTP_SENDER_ROUTES } from "./metadata";
+import { MAX_HTTP_SENDER_ROUTES } from "./metadata";
 
 function validateRoutes(routes: HttpSenderRoute[]): void {
   if (
@@ -78,11 +71,16 @@ function validateRoutes(routes: HttpSenderRoute[]): void {
     routes.length > MAX_HTTP_SENDER_ROUTES ||
     new Set(routes.map((route) => route.id)).size !== routes.length
   ) {
-    throw new Error(`Provide 1 to ${MAX_HTTP_SENDER_ROUTES} routes with unique IDs`);
+    throw new Error(
+      `Provide 1 to ${MAX_HTTP_SENDER_ROUTES} routes with unique IDs`,
+    );
   }
   for (const route of routes) {
-    if (route.apiKey !== undefined &&
-        (typeof route.apiKey !== "string" || !/^[\x21-\x7e]{1,2048}$/.test(route.apiKey))) {
+    if (
+      route.apiKey !== undefined &&
+      (typeof route.apiKey !== "string" ||
+        !/^[\x21-\x7e]{1,2048}$/.test(route.apiKey))
+    ) {
       throw new Error("Invalid sender API key");
     }
     if (!route.id.trim()) throw new Error("Route ID must not be empty");
@@ -276,22 +274,39 @@ export function assertSenderVariants(
   });
 }
 
-/** Submit already signed bytes once per route, without signing, rebuilding or confirmation polling. */
-export async function sendPreparedTransactions(
+/** Options snapshotted during signed-submission preparation. */
+export interface SignedTransactionSubmissionOptions {
+  minContextSlot: number;
+  timeoutMs?: number;
+  lookupTables?: AddressLookupTableAccount[];
+  /** Keep this synchronous observer lightweight; exceptions are ignored.
+   * A response marker is HTTP arrival, not a transaction acceptance or confirmation.
+   * Accepted/rejected mark each route's parsed result without waiting for other routes.
+   * Rejected includes uncertain transport failures; it does not prove non-delivery.
+   */
+  onTiming?: (event: PreparedTransactionTimingEvent) => void;
+}
+
+/** One-shot network dispatch. Repeated calls throw without sending again. */
+export type PreparedSignedTransactionSubmission = () => Promise<
+  { routeId: string; accepted: boolean }[]
+>;
+
+/** Validates signed variants and constructs clients synchronously without network requests.
+ * The returned one-shot closure retains private snapshots of bytes, routes and options.
+ * Prepare every wallet before dispatching a batch to keep validation out of its send window.
+ */
+export function prepareSignedTransactionSubmission(
   routes: HttpSenderRoute[],
   variants: SignedTransactionVariant[],
-  options: {
-    minContextSlot: number;
-    timeoutMs?: number;
-    lookupTables?: AddressLookupTableAccount[];
-    /** Keep this synchronous observer lightweight; exceptions are ignored.
-     * A response marker is HTTP arrival, not a transaction acceptance or confirmation.
-     * Accepted/rejected mark each route's parsed result without waiting for other routes.
-     * Rejected includes uncertain transport failures; it does not prove non-delivery.
-     */
-    onTiming?: (event: PreparedTransactionTimingEvent) => void;
-  },
-): Promise<{ routeId: string; accepted: boolean }[]> {
+  options: SignedTransactionSubmissionOptions,
+): PreparedSignedTransactionSubmission {
+  routes = routes.map((route) => ({
+    ...route,
+    ...(route.headers ? { headers: { ...route.headers } } : {}),
+  }));
+  variants = variants.map((variant) => ({ ...variant }));
+  options = { ...options };
   validateRoutes(routes);
   if (
     !Number.isSafeInteger(options.minContextSlot) ||
@@ -361,42 +376,57 @@ export async function sendPreparedTransactions(
     options.lookupTables ?? [],
     routes,
   );
-  return Promise.all(
-    submissions.map(async ({ route, bytes, expectedSignature, client }) => {
-      const notifyResult = (accepted: boolean) => {
-        if (!options.onTiming) return;
+  let dispatched = false;
+  return () => {
+    if (dispatched)
+      throw new Error("Prepared submission has already been dispatched");
+    dispatched = true;
+    return Promise.all(
+      submissions.map(async ({ route, bytes, expectedSignature, client }) => {
+        const notifyResult = (accepted: boolean) => {
+          if (!options.onTiming) return;
+          try {
+            options.onTiming({
+              routeId: route.id,
+              phase: accepted ? "accepted" : "rejected",
+              at: performance.timeOrigin + performance.now(),
+            });
+          } catch {
+            // Observer failures must not turn acceptance into rejection.
+          }
+        };
         try {
-          options.onTiming({
-            routeId: route.id,
-            phase: accepted ? "accepted" : "rejected",
-            at: performance.timeOrigin + performance.now(),
-          });
+          const signature = await client.sendTransaction(
+            TradeType.Buy,
+            bytes,
+            false,
+            {
+              minContextSlot: options.minContextSlot,
+              timeoutMs: options.timeoutMs,
+              headers: route.headers,
+              onTiming: options.onTiming
+                ? (event) => options.onTiming!({ routeId: route.id, ...event })
+                : undefined,
+            },
+          );
+          const accepted = signature === expectedSignature;
+          notifyResult(accepted);
+          return { routeId: route.id, accepted };
         } catch {
-          // Observer failures must not turn acceptance into rejection.
+          // A timeout or error cannot establish whether the provider received the bytes.
+          notifyResult(false);
+          return { routeId: route.id, accepted: false };
         }
-      };
-      try {
-        const signature = await client.sendTransaction(
-          TradeType.Buy,
-          bytes,
-          false,
-          {
-            minContextSlot: options.minContextSlot,
-            timeoutMs: options.timeoutMs,
-            headers: route.headers,
-            onTiming: options.onTiming
-              ? (event) => options.onTiming!({ routeId: route.id, ...event })
-              : undefined,
-          },
-        );
-        const accepted = signature === expectedSignature;
-        notifyResult(accepted);
-        return { routeId: route.id, accepted };
-      } catch {
-        // A timeout or error cannot establish whether the provider received the bytes.
-        notifyResult(false);
-        return { routeId: route.id, accepted: false };
-      }
-    }),
-  );
+      }),
+    );
+  };
+}
+
+/** Submit already signed bytes once per route, without signing, rebuilding or confirmation polling. */
+export async function sendPreparedTransactions(
+  routes: HttpSenderRoute[],
+  variants: SignedTransactionVariant[],
+  options: SignedTransactionSubmissionOptions,
+): Promise<{ routeId: string; accepted: boolean }[]> {
+  return prepareSignedTransactionSubmission(routes, variants, options)();
 }
