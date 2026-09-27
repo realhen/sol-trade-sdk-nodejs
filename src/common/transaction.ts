@@ -1,4 +1,5 @@
-import { Buffer } from 'buffer';
+import { compileV1Transaction, TransactionV1 } from "./transaction-v1";
+import { Buffer } from "buffer";
 import {
   AddressLookupTableAccount,
   Keypair,
@@ -7,12 +8,12 @@ import {
   TransactionInstruction,
   TransactionMessage,
   VersionedTransaction,
-} from '@solana/web3.js';
-import { TradeType } from '../enums';
-import type { GasFeeStrategyConfig } from '../index';
-import { CONSTANTS as SDK_CONSTANTS } from '../constants';
-import { computeBudgetInstructions } from './compute-budget';
-import { TradeError } from '../sdk-errors';
+} from "@solana/web3.js";
+import { TradeType } from "../enums";
+import type { GasFeeStrategyConfig } from "../index";
+import { CONSTANTS as SDK_CONSTANTS } from "../constants";
+import { computeBudgetInstructions } from "./compute-budget";
+import { TradeError } from "../sdk-errors";
 const PACKET_DATA_SIZE = 1232;
 
 /** Instruction order matches Rust `trading/common/transaction_builder.rs` `build_transaction`: nonce → tip → compute budget → business. */
@@ -57,7 +58,7 @@ export function buildTipInstruction(
   lamports: number,
 ): TransactionInstruction {
   if (!Number.isSafeInteger(lamports) || lamports <= 0) {
-    throw new Error('Tip must be a positive safe integer in lamports');
+    throw new Error("Tip must be a positive safe integer in lamports");
   }
   return SystemProgram.transfer({
     fromPubkey: payer,
@@ -71,15 +72,32 @@ export interface CompileTransactionOptions {
   instructions: TransactionInstruction[];
   recentBlockhash: string;
   lookupTables?: AddressLookupTableAccount[];
+  version?: 0 | 1;
 }
 
 /** Compile locally without a wallet or RPC; only the payer may be required to sign. */
+export function compileTransaction(
+  options: CompileTransactionOptions & { version: 1 },
+): TransactionV1;
+export function compileTransaction(
+  options: CompileTransactionOptions & { version?: 0 },
+): VersionedTransaction;
+export function compileTransaction(
+  options: CompileTransactionOptions,
+): VersionedTransaction | TransactionV1;
 export function compileTransaction({
   payer,
   instructions,
   recentBlockhash,
   lookupTables = [],
-}: CompileTransactionOptions): VersionedTransaction {
+  version = 0,
+}: CompileTransactionOptions): VersionedTransaction | TransactionV1 {
+  if (version === 1) {
+    const tx = compileV1Transaction({ payer, instructions, recentBlockhash });
+    if (tx.message.header.numRequiredSignatures !== 1)
+      throw new Error("Transaction must require only the payer signature");
+    return tx;
+  }
   const message = new TransactionMessage({
     payerKey: payer,
     recentBlockhash,
@@ -89,7 +107,7 @@ export function compileTransaction({
     message.header.numRequiredSignatures !== 1 ||
     !message.staticAccountKeys[0]?.equals(payer)
   ) {
-    throw new Error('Transaction must require only the payer signature');
+    throw new Error("Transaction must require only the payer signature");
   }
   const tx = new VersionedTransaction(message);
   let serializedLen: number;
@@ -98,8 +116,8 @@ export function compileTransaction({
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (
-      message.includes('encoding overruns') ||
-      message.toLowerCase().includes('too large')
+      message.includes("encoding overruns") ||
+      message.toLowerCase().includes("too large")
     ) {
       throw new TradeError(
         109,
@@ -130,8 +148,14 @@ export interface BuildSwapTransactionOptions extends CompileTransactionOptions {
 
 /** Build nonce, compute budget, then business instructions for external wallet signing. */
 export function buildSwapTransaction(
+  options: BuildSwapTransactionOptions & { version: 1 },
+): TransactionV1;
+export function buildSwapTransaction(
+  options: BuildSwapTransactionOptions & { version?: 0 },
+): VersionedTransaction;
+export function buildSwapTransaction(
   options: BuildSwapTransactionOptions,
-): VersionedTransaction {
+): VersionedTransaction | TransactionV1 {
   const {
     payer,
     instructions,
@@ -144,16 +168,16 @@ export function buildSwapTransaction(
     computeUnitLimit <= 0 ||
     computeUnitLimit > 1_400_000
   ) {
-    throw new Error('Compute unit limit must be between 1 and 1400000');
+    throw new Error("Compute unit limit must be between 1 and 1400000");
   }
   if (
     computeUnitPriceMicroLamports < 0n ||
     computeUnitPriceMicroLamports > 0xffffffffffffffffn
   ) {
-    throw new Error('Compute unit price must be an unsigned 64-bit integer');
+    throw new Error("Compute unit price must be an unsigned 64-bit integer");
   }
   if (durableNonce && !durableNonce.authority.equals(payer)) {
-    throw new Error('Durable nonce authority must be the payer');
+    throw new Error("Durable nonce authority must be the payer");
   }
   return compileTransaction({
     ...options,

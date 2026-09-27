@@ -1,6 +1,6 @@
 {
   "name": "sol-trade-sdk",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "High-performance Solana trading SDK with multi-protocol support",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
@@ -82,6 +82,7 @@
   },
   "dependencies": {
     "@noble/curves": "1.9.7",
+    "@solana/kit": "8.3.0",
     "@solana/web3.js": "^1.98.4",
     "bn.js": "^5.2.1",
     "borsh": "^0.7.0",
