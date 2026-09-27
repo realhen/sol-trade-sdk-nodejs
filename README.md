@@ -465,3 +465,10 @@ it is not a standalone script for direct inclusion in a page.
 Strict TypeScript consumers need the Node type declarations used by
 `@solana/web3.js` (for example, `@types/node`). These are compile-time types;
 the browser runtime does not require a global `process` or `Buffer`.
+
+
+### Browser provider settings
+
+`sol-trade-sdk/swqos-settings` exposes transport-free HTTP provider metadata and tip-address validation for settings pages. `HttpSenderRoute.apiKey` is forwarded to each provider's own HTTP client; keys must stay in trusted caller storage. Prepared submission supports up to 64 routes including the untipped default RPC. Every multi-route submission still requires matching same-nonce transaction variants and caller-owned signatures. Native-only and blacklisted providers are excluded from the settings catalog.
+
+The browser submission workflow tests all 11 supported HTTP providers concurrently against loopback fixtures, including v1 signatures, provider-specific authentication, query preservation and normalized endpoint paths. These fixtures do not establish production provider availability or transaction landing rates. The 0slot HTTPS default follows its [official endpoint documentation](https://0slot.trade/docs.php); providers whose bundled defaults are HTTP-only require callers to supply an HTTPS endpoint in browser settings.

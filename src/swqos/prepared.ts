@@ -35,7 +35,9 @@ export interface HttpSenderRoute {
   tipAccount?: string;
   tipLamports: number;
   headers?: Record<string, string>;
-  type?: SwqosType;
+  /** Provider credential; caller must keep routes in a trusted context. */
+  apiKey?: string;
+  type?: `${SwqosType}`;
   swqosOnly?: boolean;
 }
 
@@ -59,15 +61,23 @@ export interface SignedTransactionVariant {
   expectedSignature: string;
 }
 
+/** Bounded fan-out supports all HTTP providers and multiple credentials per provider. */
+export { MAX_HTTP_SENDER_ROUTES } from './metadata';
+import { MAX_HTTP_SENDER_ROUTES } from './metadata';
+
 function validateRoutes(routes: HttpSenderRoute[]): void {
   if (
     routes.length < 1 ||
-    routes.length > 5 ||
+    routes.length > MAX_HTTP_SENDER_ROUTES ||
     new Set(routes.map((route) => route.id)).size !== routes.length
   ) {
-    throw new Error("Provide 1 to 5 routes with unique IDs");
+    throw new Error(`Provide 1 to ${MAX_HTTP_SENDER_ROUTES} routes with unique IDs`);
   }
   for (const route of routes) {
+    if (route.apiKey !== undefined &&
+        (typeof route.apiKey !== "string" || !/^[\x21-\x7e]{1,2048}$/.test(route.apiKey))) {
+      throw new Error("Invalid sender API key");
+    }
     if (!route.id.trim()) throw new Error("Route ID must not be empty");
     const url = new URL(route.url);
     if (
@@ -320,7 +330,8 @@ export async function sendPreparedTransactions(
     const route = routes[index]!;
     const client = ClientFactory.createClient(
       {
-        type: route.type ?? SwqosType.Default,
+        type: (route.type ?? SwqosType.Default) as SwqosType,
+        apiKey: route.apiKey,
         customUrl: route.url,
         transport: SwqosTransport.Http,
         swqosOnly: route.swqosOnly,
