@@ -137,6 +137,10 @@ export function compileTransaction({
 }
 
 export interface BuildSwapTransactionOptions extends CompileTransactionOptions {
+  /** Public identifier included as a memo to distinguish otherwise identical intentional swaps.
+   * Reuse it when rebuilding the same intent; callers own generation and idempotency.
+   */
+  transactionId?: string;
   computeUnitLimit: number;
   computeUnitPriceMicroLamports: bigint;
   durableNonce?: {
@@ -162,6 +166,7 @@ export function buildSwapTransaction(
     durableNonce,
     computeUnitLimit,
     computeUnitPriceMicroLamports,
+    transactionId,
   } = options;
   if (
     !Number.isInteger(computeUnitLimit) ||
@@ -178,6 +183,14 @@ export function buildSwapTransaction(
   }
   if (durableNonce && !durableNonce.authority.equals(payer)) {
     throw new Error("Durable nonce authority must be the payer");
+  }
+  if (
+    transactionId !== undefined &&
+    !/^[A-Za-z0-9:_-]{1,128}$/.test(transactionId)
+  ) {
+    throw new Error(
+      "Transaction ID must contain 1 to 128 ASCII identifier characters",
+    );
   }
   return compileTransaction({
     ...options,
@@ -196,6 +209,17 @@ export function buildSwapTransaction(
         computeUnitLimit,
       ),
       ...instructions,
+      ...(transactionId === undefined
+        ? []
+        : [
+            new TransactionInstruction({
+              programId: new PublicKey(
+                "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",
+              ),
+              keys: [],
+              data: Buffer.from(transactionId, "utf8"),
+            }),
+          ]),
     ],
   });
 }

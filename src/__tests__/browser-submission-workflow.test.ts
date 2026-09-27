@@ -31,7 +31,10 @@ import {
   type HttpSenderRoute,
   MAX_HTTP_SENDER_ROUTES,
 } from "../swqos/prepared";
-import { HTTP_SENDER_PROVIDERS, httpSenderDefaults } from "../swqos/http-settings";
+import {
+  HTTP_SENDER_PROVIDERS,
+  httpSenderDefaults,
+} from "../swqos/http-settings";
 import { SwqosType } from "../enums";
 
 const payer = Keypair.generate();
@@ -115,7 +118,9 @@ async function localEndpoint(
     transaction: VersionedTransaction | TransactionV1;
   }[] = [];
   let release!: () => void;
-  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
   const server = createServer(async (request, response) => {
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
@@ -124,8 +129,16 @@ async function localEndpoint(
       request.headers["content-type"] === "application/octet-stream";
     const body = binary ? {} : JSON.parse(raw.toString());
     const bytes = binary
-      ? (request.url?.startsWith("/api/sendBatch") ? raw.subarray(2) : raw)
-      : Buffer.from(body.params?.[0] ?? body.transaction?.content ?? body.transactions?.[0] ?? body.transaction, "base64");
+      ? request.url?.startsWith("/api/sendBatch")
+        ? raw.subarray(2)
+        : raw
+      : Buffer.from(
+          body.params?.[0] ??
+            body.transaction?.content ??
+            body.transactions?.[0] ??
+            body.transaction,
+          "base64",
+        );
     const transaction =
       bytes[0] === 0x81
         ? TransactionV1.deserialize(bytes)
@@ -290,7 +303,10 @@ describe("caller-signed browser HTTP submission workflow", () => {
       prepareTransactionVariants(
         makeBase(),
         [],
-        Array.from({ length: MAX_HTTP_SENDER_ROUTES + 1 }, (_, i) => ({ ...routes[0]!, id: `${i}` })),
+        Array.from({ length: MAX_HTTP_SENDER_ROUTES + 1 }, (_, i) => ({
+          ...routes[0]!,
+          id: `${i}`,
+        })),
       ),
     ).toThrow(/1 to 64/);
     expect(() =>
@@ -707,6 +723,71 @@ describe("caller-signed browser HTTP submission workflow", () => {
 });
 
 describe("v1 browser submission workflow", () => {
+  it("sends distinct same-wallet intents under one blockhash without changing swap amounts or fees", async () => {
+    const endpoint = await localEndpoint("accept", 3);
+    const routes = makeRoutes(endpoint.url).slice(0, 1);
+    const build = (transactionId: string) =>
+      buildSwapTransaction({
+        version: 1,
+        payer: payer.publicKey,
+        instructions: core,
+        recentBlockhash: nonceHash,
+        computeUnitLimit: 200_000,
+        computeUnitPriceMicroLamports: 50n,
+        transactionId,
+      });
+    const signatures = new Set<string>();
+    const dispatches: ReturnType<typeof prepareSignedTransactionSubmission>[] =
+      [];
+    for (const transactionId of ["intent-1", "intent-2", "intent-3"]) {
+      const base = build(transactionId);
+      expect(Buffer.from(base.serialize())).toEqual(
+        Buffer.from(build(transactionId).serialize()),
+      );
+      const decoded = decompileV1Transaction(base);
+      expect(decoded.instructions.at(-1)!.data.toString()).toBe(transactionId);
+      expect(decoded.instructions[0]!.data).toEqual(core[0]!.data);
+      const variants = prepareTransactionVariants(base, [], routes);
+      variants[0]!.transaction.sign([payer]);
+      signatures.add(bs58.encode(variants[0]!.transaction.signatures[0]!));
+      const packets = signed(variants);
+      dispatches.push(
+        prepareSignedTransactionSubmission(routes, packets, {
+          minContextSlot: 10,
+        }),
+      );
+    }
+    const results = await Promise.all(dispatches.map((dispatch) => dispatch()));
+    expect(results.flat().every((result) => result.accepted)).toBe(true);
+    expect(signatures.size).toBe(3);
+    expect(endpoint.received).toHaveLength(3);
+    expect(() => build("")).toThrow("Transaction ID");
+    expect(() => build("x".repeat(129))).toThrow("Transaction ID");
+    const withNonce = buildSwapTransaction({
+      version: 1,
+      payer: payer.publicKey,
+      instructions: core,
+      recentBlockhash: nonceHash,
+      computeUnitLimit: 200_000,
+      computeUnitPriceMicroLamports: 50n,
+      transactionId: "nonce-intent",
+      durableNonce: { nonceAccount, authority: payer.publicKey, nonceHash },
+    });
+    expect(
+      SystemInstruction.decodeNonceAdvance(
+        decompileV1Transaction(withNonce).instructions[0]!,
+      ).noncePubkey,
+    ).toEqual(nonceAccount);
+    const nonceRoutes = makeRoutes();
+    expect(() =>
+      assertSenderVariants(
+        prepareTransactionVariants(withNonce, [], nonceRoutes),
+        [],
+        nonceRoutes,
+      ),
+    ).not.toThrow();
+  });
+
   it("prepares sixteen single-route buys with at most one decode at each preparation boundary", async () => {
     const endpoint = await localEndpoint("accept", 16);
     const routes = makeRoutes(endpoint.url).slice(0, 1);
@@ -716,9 +797,13 @@ describe("v1 browser submission workflow", () => {
       const base = compileV1Transaction({
         payer: wallet.publicKey,
         recentBlockhash: nonceHash,
-        instructions: [SystemProgram.transfer({
-          fromPubkey: wallet.publicKey, toPubkey: recipient, lamports: 17,
-        })],
+        instructions: [
+          SystemProgram.transfer({
+            fromPubkey: wallet.publicKey,
+            toPubkey: recipient,
+            lamports: 17,
+          }),
+        ],
       });
       const original = Buffer.from(base.serialize());
       const variants = prepareTransactionVariants(base, [], routes);
@@ -731,15 +816,21 @@ describe("v1 browser submission workflow", () => {
         };
       });
       expect(Buffer.from(base.serialize())).toEqual(original);
-      return prepareSignedTransactionSubmission(routes, packets, { minContextSlot: 10 });
+      return prepareSignedTransactionSubmission(routes, packets, {
+        minContextSlot: 10,
+      });
     });
     expect(decode.mock.calls.length).toBeLessThanOrEqual(32);
-    const results = await Promise.all(dispatches.map(dispatch => dispatch()));
-    expect(results.flat().every(result => result.accepted)).toBe(true);
+    const results = await Promise.all(dispatches.map((dispatch) => dispatch()));
+    expect(results.flat().every((result) => result.accepted)).toBe(true);
     expect(endpoint.received).toHaveLength(16);
-    expect(new Set(endpoint.received.map(request =>
-      request.transaction.message.staticAccountKeys[0]!.toBase58(),
-    )).size).toBe(16);
+    expect(
+      new Set(
+        endpoint.received.map((request) =>
+          request.transaction.message.staticAccountKeys[0]!.toBase58(),
+        ),
+      ).size,
+    ).toBe(16);
   });
   it("rejects ambiguous legacy priority fees without an explicit compute limit", () => {
     expect(() =>
@@ -848,65 +939,108 @@ describe("v1 browser submission workflow", () => {
   });
 });
 
-
 describe("provider settings submission workflow", () => {
   it("dispatches all HTTP providers concurrently with provider-specific credentials", async () => {
-    const endpoint = await localEndpoint("accept", HTTP_SENDER_PROVIDERS.length + 1);
+    const endpoint = await localEndpoint(
+      "accept",
+      HTTP_SENDER_PROVIDERS.length + 1,
+    );
     const routes: HttpSenderRoute[] = [
       { id: "rpc", name: "RPC", url: endpoint.url + "/rpc", tipLamports: 0 },
       ...HTTP_SENDER_PROVIDERS.map((type) => ({
-        ...httpSenderDefaults(type), id: type, name: type,
+        ...httpSenderDefaults(type),
+        id: type,
+        name: type,
         url: endpoint.url + "/" + type + "?preserved=yes",
         apiKey: "test/key+value",
       })),
     ];
     // Providers which append path segments take a base URL without a query.
     for (const route of routes) {
-      if ([SwqosType.Bloxroute, SwqosType.FlashBlock, SwqosType.Stellium].includes(route.type!)) {
+      if (
+        [
+          SwqosType.Bloxroute,
+          SwqosType.FlashBlock,
+          SwqosType.Stellium,
+        ].includes(route.type!)
+      ) {
         route.url = endpoint.url + "/" + route.type;
       }
     }
-    const base = buildSwapTransaction({ version: 1, payer: payer.publicKey,
-      instructions: core, recentBlockhash: nonceHash, computeUnitLimit: 200_000,
-      durableNonce: { nonceAccount, authority: payer.publicKey, nonceHash } });
-    const results = await sendPreparedTransactions(routes, signed(prepareTransactionVariants(base, [], routes)), { minContextSlot: 1, timeoutMs: 2000 });
+    const base = buildSwapTransaction({
+      version: 1,
+      payer: payer.publicKey,
+      instructions: core,
+      recentBlockhash: nonceHash,
+      computeUnitLimit: 200_000,
+      durableNonce: { nonceAccount, authority: payer.publicKey, nonceHash },
+    });
+    const results = await sendPreparedTransactions(
+      routes,
+      signed(prepareTransactionVariants(base, [], routes)),
+      { minContextSlot: 1, timeoutMs: 2000 },
+    );
     expect(results.filter((result) => !result.accepted)).toEqual([]);
     expect(endpoint.received).toHaveLength(routes.length);
     for (const type of HTTP_SENDER_PROVIDERS) {
-      const request = endpoint.received.find((entry) => type === SwqosType.Temporal
-        ? entry.path.startsWith("/api/sendBatch") : entry.path.startsWith("/" + type))!;
+      const request = endpoint.received.find((entry) =>
+        type === SwqosType.Temporal
+          ? entry.path.startsWith("/api/sendBatch")
+          : entry.path.startsWith("/" + type),
+      )!;
       expect(request.transaction.version).toBe(1);
       const url = new URL(request.path, endpoint.url);
-      if (type === SwqosType.Jito) expect(request.headers["x-jito-auth"]).toBe("test/key+value");
-      if ([SwqosType.Bloxroute, SwqosType.FlashBlock].includes(type)) expect(request.headers.authorization).toBe("test/key+value");
-      if (type === SwqosType.Node1) expect(request.headers["api-key"]).toBe("test/key+value");
-      if (type === SwqosType.BlockRazor) expect(request.headers.apikey).toBe("test/key+value");
-      if ([SwqosType.Helius, SwqosType.ZeroSlot, SwqosType.Astralane].includes(type)) expect(url.searchParams.get("api-key")).toBe("test/key+value");
-      if (type === SwqosType.Temporal) expect(url.searchParams.get("c")).toBe("test/key+value");
-      if (type === SwqosType.Stellium) expect(url.pathname).toBe("/Stellium/test%2Fkey%2Bvalue");
-      if (type === SwqosType.Lightspeed) expect(url.searchParams.get("api_key")).toBe("test/key+value");
+      if (type === SwqosType.Jito)
+        expect(request.headers["x-jito-auth"]).toBe("test/key+value");
+      if ([SwqosType.Bloxroute, SwqosType.FlashBlock].includes(type))
+        expect(request.headers.authorization).toBe("test/key+value");
+      if (type === SwqosType.Node1)
+        expect(request.headers["api-key"]).toBe("test/key+value");
+      if (type === SwqosType.BlockRazor)
+        expect(request.headers.apikey).toBe("test/key+value");
+      if (
+        [SwqosType.Helius, SwqosType.ZeroSlot, SwqosType.Astralane].includes(
+          type,
+        )
+      )
+        expect(url.searchParams.get("api-key")).toBe("test/key+value");
+      if (type === SwqosType.Temporal)
+        expect(url.searchParams.get("c")).toBe("test/key+value");
+      if (type === SwqosType.Stellium)
+        expect(url.pathname).toBe("/Stellium/test%2Fkey%2Bvalue");
+      if (type === SwqosType.Lightspeed)
+        expect(url.searchParams.get("api_key")).toBe("test/key+value");
     }
   });
 });
-
 
 it("submits to normalized root and full provider endpoints without double paths", async () => {
   const endpoint = await localEndpoint("accept", 3);
   const routes: HttpSenderRoute[] = [
     { id: "rpc", name: "RPC", url: endpoint.url + "/rpc", tipLamports: 0 },
     ...[SwqosType.Bloxroute, SwqosType.FlashBlock].map((type) => ({
-      ...httpSenderDefaults(type), id: type, name: type,
-      url: type === SwqosType.Bloxroute ? endpoint.url + "/?region=test" : endpoint.url + "/api/v2/submit-batch?region=test",
+      ...httpSenderDefaults(type),
+      id: type,
+      name: type,
+      url:
+        type === SwqosType.Bloxroute
+          ? endpoint.url + "/?region=test"
+          : endpoint.url + "/api/v2/submit-batch?region=test",
       apiKey: "fixture-key",
     })),
   ];
-  const result = await sendPreparedTransactions(routes, signed(prepareTransactionVariants(makeBase(), [], routes)), { minContextSlot: 1 });
+  const result = await sendPreparedTransactions(
+    routes,
+    signed(prepareTransactionVariants(makeBase(), [], routes)),
+    { minContextSlot: 1 },
+  );
   expect(result.every((item) => item.accepted)).toBe(true);
   expect(endpoint.received.map((request) => request.path).sort()).toEqual([
-    "/api/v2/submit-batch?region=test", "/api/v2/submit?region=test", "/rpc",
+    "/api/v2/submit-batch?region=test",
+    "/api/v2/submit?region=test",
+    "/rpc",
   ]);
 });
-
 
 describe("signed submission preparation barrier", () => {
   it("prepares all wallets without fetch and dispatches each once in the same turn", async () => {
