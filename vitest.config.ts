@@ -1,6 +1,17 @@
-import { defineConfig } from 'vitest/config';
+import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   // DLMM's published ESM imports an Anchor directory; Vite resolves it when inlined.
-  test: { server: { deps: { inline: ['@meteora-ag/dlmm'] } } },
+  test: {
+    server: {
+      deps: {
+        inline: [
+          "@meteora-ag/dlmm",
+          "@pump-fun/pump-sdk",
+          "@pump-fun/pump-swap-sdk",
+          "@pump-fun/agent-payments-sdk",
+        ],
+      },
+    },
+  },
 });

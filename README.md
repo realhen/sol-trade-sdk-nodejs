@@ -660,3 +660,36 @@ Use Surfpool 1.6.0 for v1 transaction support. Read its evidence report for indi
 cases: unavailable upstream quotes and malformed local receipt metadata are reported
 separately from successful execution. Optional harness-only receipt metadata correction
 never changes the SDK's strict receipt validator or the extension's accounting behavior.
+
+### Pool-specific direct swaps (no routing service)
+
+`sol-trade-sdk/direct` and `sol-trade-sdk/direct/browser` expose a single API for
+Pump.fun, PumpSwap, Raydium CPMM/AMM v4/LaunchLab/CLMM, Orca Whirlpool, and
+Meteora DAMM v1/v2, DLMM, and DBC. No Jupiter account or API key is required.
+
+```ts
+import { prepareDirectMarket, quoteDirectSwap, buildDirectSwap,
+  normalizeDirectFill } from 'sol-trade-sdk/direct';
+const market = await prepareDirectMarket(connection, pool, targetMint);
+const quote = quoteDirectSwap(market, market.quoteMint, amountIn, 100);
+const { instructions, expectation } = await buildDirectSwap(market, quote, owner);
+// Caller composes, signs, submits, and retrieves a confirmed jsonParsed receipt.
+const fill = normalizeDirectFill(confirmedReceipt, expectation);
+```
+
+Preparation reads only through the supplied Connection and can run against a
+recording or cache-only connection. Rebuild the market when its streamed account
+dependencies change. Quotes and builds perform no RPC; quote objects are bound
+to the exact prepared market. `sizeDirectSellForQuoteValue(market, targetAmount,
+maximumInputAmount, slippageBps)` finds a token-input quote whose protected output
+reaches the requested quote-token value using bounded local integer search.
+
+Non-native swaps spend an already funded input-token ATA and return the pool's
+other token. The SDK does not convert SOL to fund a non-SOL quote. Native SOL
+endpoints use wrapping/cleanup where the venue requires WSOL; Pump native curves
+use their native-SOL instructions. Token-2022 transfer fees are supported by
+CPMM, DAMM v2, CLMM, Orca and DLMM; unsupported extensions/configurations fail
+closed. Persist the complete returned expectation for receipt verification;
+settled amounts come from confirmed balance changes and verified swap scope,
+including partial actual input on Orca. The older `router` API remains available
+for compatibility, separately from this direct API.
