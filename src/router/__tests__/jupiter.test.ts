@@ -9,7 +9,10 @@ import {
   TOKEN_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
   NATIVE_MINT,
+  getAssociatedTokenAddressSync,
 } from "@solana/spl-token";
+import direct from "./fixtures/sol-usdc-build.json";
+import fundedPump from "./fixtures/funded-met-pump-build.json";
 import live from "./fixtures/pump-met-build.json";
 import mask from "./fixtures/mask-build.json";
 import maskReverse from "./fixtures/mask-reverse-build.json";
@@ -95,6 +98,92 @@ function harness(body = fixture(), overrides: any = {}) {
   };
 }
 describe("Jupiter prepared route trust boundary", () => {
+  it("prepares the funded MET-to-Pump fixture with only its existing quote-token balance", async () => {
+    const trade = await router.prepareJupiterRoute(
+      harness(fixture(fundedPump), {
+        directPairOnly: true,
+        amountIn: BigInt(fundedPump.inAmount),
+      }),
+    );
+    expect(trade.inputMint.toBase58()).toBe(
+      "METvsvVRapdj9cFLzq4Tr43xK4tAjQfwX76z3n6mWQL",
+    );
+    expect(trade.routeLegs).toEqual([
+      expect.objectContaining({
+        inputMint: fundedPump.inputMint,
+        outputMint: fundedPump.outputMint,
+        bps: 10000,
+      }),
+    ]);
+    expect(
+      trade.instructions.every(
+        (ix) => !ix.programId.equals(SystemProgram.programId),
+      ),
+    ).toBe(true);
+  });
+  it.each([false, true])(
+    "uses funded SPL endpoints without a SOL conversion (reverse=%s)",
+    async (reverse) => {
+      // Deterministic transport workflow, not a claim of on-chain execution.
+      const left = new PublicKey(
+        "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+      );
+      const right = new PublicKey(direct.outputMint);
+      const input = reverse ? right : left,
+        output = reverse ? left : right;
+      const replacements = new Map([
+        [direct.inputMint, input.toBase58()],
+        [direct.outputMint, output.toBase58()],
+        [
+          direct.swapInstruction.accounts[1]!.pubkey,
+          getAssociatedTokenAddressSync(input, owner, true).toBase58(),
+        ],
+        [
+          direct.swapInstruction.accounts[2]!.pubkey,
+          getAssociatedTokenAddressSync(output, owner, true).toBase58(),
+        ],
+      ]);
+      const body = JSON.parse(JSON.stringify(fixture(direct)), (_, value) =>
+        typeof value === "string" ? (replacements.get(value) ?? value) : value,
+      );
+      const args = harness(body, { directPairOnly: true });
+      args.transport = async (url: string) => {
+        const query = new URL(url).searchParams;
+        expect(query.get("inputMint")).toBe(input.toBase58());
+        expect(query.get("outputMint")).toBe(output.toBase58());
+        expect(query.get("wrapAndUnwrapSol")).toBe("false");
+        return new Response(JSON.stringify(body));
+      };
+      const trade = await router.prepareJupiterRoute(args);
+      expect(trade.directPairOnly).toBe(true);
+      expect(trade.routeLegs).toHaveLength(1);
+      expect(
+        trade.instructions.every(
+          (ix) =>
+            ix.programId.toBase58() ===
+              "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4" ||
+            ix.programId.toBase58().startsWith("AToken"),
+        ),
+      ).toBe(true);
+      expect(trade.wrapNativeInput || trade.unwrapNativeOutput).toBe(false);
+      router.assertRouterTradeFresh(trade, 1001);
+      trade.directPairOnly = false;
+      expect(() => router.assertRouterTradeFresh(trade, 1001)).toThrow(
+        /modified/,
+      );
+    },
+  );
+  it.each([live, mask, three])(
+    "rejects conversion/split routes from their instruction bytes",
+    async (source) => {
+      const body = fixture(source);
+      // Dishonest JSON cannot hide the binary graph.
+      body.routePlan = [body.routePlan[0]];
+      await expect(
+        router.prepareJupiterRoute(harness(body, { directPairOnly: true })),
+      ).rejects.toThrow(/direct pair/);
+    },
+  );
   it("prepares a real non-SOL Pump multi-hop instruction with the on-chain floor", async () => {
     const t = await router.prepareJupiterRoute(harness());
     expect(t.amountIn).toBe(100000000n);

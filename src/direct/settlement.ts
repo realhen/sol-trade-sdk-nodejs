@@ -8,25 +8,27 @@ import {
 } from "@solana/spl-token";
 import bs58 from "bs58";
 import { Buffer } from "buffer";
-import {
-  assertDirectJupiterRoute,
-  decodeJupiterRouteInstruction,
-} from "./jupiter";
 
-export interface JupiterFillExpectation {
+export interface DirectSwapExpectation {
+  provider: "direct";
   owner: string;
+  pool: string;
+  venue: string;
   inputMint: string;
   outputMint: string;
   inputTokenProgram: string;
   outputTokenProgram: string;
-  amountIn: string;
-  minimumAmountOut: string;
-  /** Persist with the route so receipt validation retains the no-conversion policy. */
-  directPairOnly?: boolean;
-  /** Exact base64 swap instruction returned by the trusted route preparation. */
-  swapInstructionData?: string;
+  inputAccount: string;
+  outputAccount: string;
+  inputAmount: string;
+  minimumOutput: string;
+  swapInstructions: {
+    programId: string;
+    keys: { pubkey: string; isSigner: boolean; isWritable: boolean }[];
+    data: string;
+  }[];
 }
-export interface NormalizedJupiterFill {
+export interface NormalizedDirectFill {
   inputAmount: bigint;
   outputAmount: bigint;
   inputDecimals: number;
@@ -36,15 +38,15 @@ export interface NormalizedJupiterFill {
 }
 
 type ObjectValue = Record<string, unknown>;
-const JUPITER = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4";
-const EVENT = "D8cy77BBepLMngZx6ZukaTff5hCt1HrWyKk3Hnd9oitf";
+const SYSTEM = "11111111111111111111111111111111";
+const PUMP = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
 const TOKEN = TOKEN_PROGRAM_ID.toBase58(),
   TOKEN22 = TOKEN_2022_PROGRAM_ID.toBase58();
 const WSOL = NATIVE_MINT.toBase58(),
   ATA_PROGRAM = ASSOCIATED_TOKEN_PROGRAM_ID.toBase58();
 const U64_MAX = (1n << 64n) - 1n;
 function fail(reason: string): never {
-  throw new Error(`Invalid Jupiter fill: ${reason}`);
+  throw new Error(`Invalid direct fill: ${reason}`);
 }
 function object(value: unknown, name: string): ObjectValue {
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -99,6 +101,7 @@ interface Endpoint {
   ata: string;
   index: number;
   native: boolean;
+  system: boolean;
   decimals: number;
   delta: bigint;
 }
@@ -116,20 +119,21 @@ function parsed(ix: ObjectValue): ParsedInstruction | null {
 /**
  * Normalize a trusted confirmed/finalized jsonParsed getTransaction receipt.
  * RPC receipts do not carry commitment; the caller must fetch at least confirmed.
- * This supports verified route_v2/shared_accounts_route_v2 contracts only.
+ * Exact persisted swap instructions bind the selected venue and pool; only their
+ * endpoint cash flow is attributed. Other instructions must have proven effects.
  */
-export function normalizeJupiterFill(
+export function normalizeDirectFill(
   tx: unknown,
-  expected: JupiterFillExpectation,
-): NormalizedJupiterFill {
+  expected: DirectSwapExpectation,
+): NormalizedDirectFill {
   const owner = address(expected.owner, "owner");
   const inputMint = address(expected.inputMint, "input mint"),
     outputMint = address(expected.outputMint, "output mint");
   if (inputMint === outputMint) fail("endpoints must be distinct");
   const inputProgram = program(expected.inputTokenProgram),
     outputProgram = program(expected.outputTokenProgram);
-  const budget = amount(expected.amountIn, "amountIn", true),
-    floor = amount(expected.minimumAmountOut, "minimumAmountOut", true);
+  const budget = amount(expected.inputAmount, "amountIn", true),
+    floor = amount(expected.minimumOutput, "minimumAmountOut", true);
   const receipt = object(tx, "transaction receipt"),
     meta = object(receipt.meta, "meta");
   if (meta.err !== null) fail("transaction did not succeed");
@@ -152,56 +156,94 @@ export function normalizeJupiterFill(
   const top = array(message.instructions, "instructions").map((v) =>
     object(v, "instruction"),
   );
-  const routeIndices = top.flatMap((ix, i) =>
-    ix.programId === JUPITER ? [i] : [],
+  if (expected.provider !== "direct") fail("invalid provider");
+  const pool = address(expected.pool, "pool");
+  const wanted = array(expected.swapInstructions, "expected swaps").map((v) =>
+    object(v, "expected swap"),
   );
-  if (routeIndices.length !== 1)
-    fail("requires exactly one top-level Jupiter instruction");
-  const routeIndex = routeIndices[0]!,
-    route = top[routeIndex]!;
-  const accounts = array(route.accounts, "route accounts").map((v) =>
-    address(v, "route account"),
-  );
-  if (typeof route.data !== "string")
-    fail("missing raw route instruction data");
-  let data: Uint8Array;
-  try {
-    data = bs58.decode(route.data);
-  } catch {
-    fail("invalid route base58 data");
-  }
-  const decoded = decodeJupiterRouteInstruction(data);
-  if (
-    expected.directPairOnly !== undefined &&
-    typeof expected.directPairOnly !== "boolean"
-  )
-    fail("invalid direct-pair policy");
-  if (expected.directPairOnly) assertDirectJupiterRoute(decoded);
-  if (decoded.amountIn !== budget || decoded.minimumAmountOut !== floor)
-    fail("route amounts do not match expected fill");
-  if (expected.swapInstructionData !== undefined) {
-    const encoded = expected.swapInstructionData;
+  if (!wanted.length || wanted.length > 16)
+    fail("invalid swap instruction count");
+  const routeIndices: number[] = [];
+  let after = -1;
+  for (const raw of wanted) {
+    const id = address(raw.programId, "swap program");
+    const metas = array(raw.keys, "swap keys").map((v) =>
+      object(v, "swap key"),
+    );
+    const expectedKeys = metas.map((k) => address(k.pubkey, "swap key"));
+    if (!expectedKeys.includes(pool)) fail("swap does not bind selected pool");
     if (
-      typeof encoded !== "string" ||
+      typeof raw.data !== "string" ||
+      !raw.data ||
       !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
-        encoded,
+        raw.data,
       )
     )
-      fail("invalid expected swap data");
-    const expectedBytes = Buffer.from(encoded, "base64");
-    if (!Buffer.from(data).equals(expectedBytes))
-      fail("route data differs from persisted swap instruction");
+      fail("invalid expected instruction bytes");
+    const bytes = Buffer.from(raw.data, "base64");
+    const matches = top.flatMap((ix, i) => {
+      if (
+        ix.programId !== id ||
+        !Array.isArray(ix.accounts) ||
+        typeof ix.data !== "string"
+      )
+        return [];
+      let data: Uint8Array;
+      try {
+        data = bs58.decode(ix.data);
+      } catch {
+        fail("invalid instruction encoding");
+      }
+      return Buffer.from(data).equals(bytes) &&
+        JSON.stringify(ix.accounts) === JSON.stringify(expectedKeys)
+        ? [i]
+        : [];
+    });
+    if (matches.length !== 1 || matches[0]! <= after)
+      fail("swap instruction bytes or accounts differ");
+    after = matches[0]!;
+    routeIndices.push(after);
+    for (const meta of metas) {
+      if (
+        typeof meta.isSigner !== "boolean" ||
+        typeof meta.isWritable !== "boolean"
+      )
+        fail("invalid expected privilege");
+      const index = addresses.indexOf(meta.pubkey as string);
+      if (
+        index < 0 ||
+        (meta.isSigner && keys[index]!.signer !== true) ||
+        (meta.isWritable && keys[index]!.writable !== true)
+      )
+        fail("missing swap account privilege");
+    }
   }
-  const makeEndpoint = (mint: string, tokenProgram: string): Endpoint => {
+  const swapPrograms = new Set(wanted.map((ix) => ix.programId));
+  if (
+    top.some(
+      (ix, i) => swapPrograms.has(ix.programId) && !routeIndices.includes(i),
+    )
+  )
+    fail("unexpected additional venue instruction");
+  const makeEndpoint = (
+    mint: string,
+    tokenProgram: string,
+    account: string,
+  ): Endpoint => {
     const native = mint === WSOL;
     if (native && tokenProgram !== TOKEN)
       fail("WSOL requires classic Token program");
-    const ata = getAssociatedTokenAddressSync(
+    const canonicalAta = getAssociatedTokenAddressSync(
       new PublicKey(mint),
       new PublicKey(owner),
       false,
       new PublicKey(tokenProgram),
     ).toBase58();
+    const ata = address(account, "endpoint account");
+    const system = native && ata === owner;
+    if (system && !wanted.every((ix) => ix.programId === PUMP))
+      fail("native owner endpoint requires Pump");
+    if (!system && ata !== canonicalAta) fail("endpoint is not owner ATA");
     const index = addresses.indexOf(ata);
     if (index < 0) fail("endpoint ATA is absent from message");
     return {
@@ -210,72 +252,13 @@ export function normalizeJupiterFill(
       ata,
       index,
       native,
+      system,
       decimals: native ? 9 : 0,
       delta: 0n,
     };
   };
-  const input = makeEndpoint(inputMint, inputProgram),
-    output = makeEndpoint(outputMint, outputProgram);
-  const shared = decoded.sharedAccountsId;
-  if (shared === undefined) {
-    const required = [
-      owner,
-      input.ata,
-      output.ata,
-      inputMint,
-      outputMint,
-      inputProgram,
-      outputProgram,
-      undefined,
-      EVENT,
-      JUPITER,
-    ];
-    if (
-      accounts.length < required.length ||
-      required.some((v, i) => v !== undefined && accounts[i] !== v) ||
-      (accounts[7] !== JUPITER && accounts[7] !== output.ata)
-    )
-      fail("route authority, endpoints or token programs mismatch");
-  } else {
-    const authority = PublicKey.findProgramAddressSync(
-      [Buffer.from("authority"), Buffer.of(shared)],
-      new PublicKey(JUPITER),
-    )[0];
-    const sharedInput = getAssociatedTokenAddressSync(
-      new PublicKey(inputMint),
-      authority,
-      true,
-      new PublicKey(inputProgram),
-    ).toBase58();
-    const sharedOutput = getAssociatedTokenAddressSync(
-      new PublicKey(outputMint),
-      authority,
-      true,
-      new PublicKey(outputProgram),
-    ).toBase58();
-    const required = [
-      authority.toBase58(),
-      owner,
-      input.ata,
-      undefined,
-      undefined,
-      output.ata,
-      inputMint,
-      outputMint,
-      inputProgram,
-      outputProgram,
-      EVENT,
-      JUPITER,
-    ];
-    if (
-      accounts.length < required.length ||
-      required.some((v, i) => v !== undefined && accounts[i] !== v) ||
-      (accounts[3] !== sharedInput && accounts[3] !== input.ata) ||
-      (accounts[4] !== sharedOutput && accounts[4] !== output.ata)
-    )
-      fail("shared route authority, endpoints or token programs mismatch");
-  }
-
+  const input = makeEndpoint(inputMint, inputProgram, expected.inputAccount),
+    output = makeEndpoint(outputMint, outputProgram, expected.outputAccount);
   const groups = array(meta.innerInstructions, "innerInstructions").map((v) =>
     object(v, "inner instruction group"),
   );
@@ -298,13 +281,15 @@ export function normalizeJupiterFill(
       };
     },
   );
-  const swapInner = allInner.find((g) => g.index === routeIndex)?.instructions;
-  if (!swapInner?.length) fail("missing Jupiter inner execution evidence");
+  const swapInner = allInner
+    .filter((g) => routeIndices.includes(g.index))
+    .flatMap((g) => g.instructions);
+  if (!swapInner?.length) fail("missing direct inner execution evidence");
   const allInstructions = [...top, ...allInner.flatMap((g) => g.instructions)];
   const outside = [
-    ...top.filter((_ix, i) => i !== routeIndex),
+    ...top.filter((_ix, i) => !routeIndices.includes(i)),
     ...allInner
-      .filter((g) => g.index !== routeIndex)
+      .filter((g) => !routeIndices.includes(g.index))
       .flatMap((g) => g.instructions),
   ];
   const rows = (value: unknown, name: string): Map<number, ObjectValue> => {
@@ -320,6 +305,76 @@ export function normalizeJupiterFill(
   const pre = rows(meta.preTokenBalances, "preTokenBalances"),
     post = rows(meta.postTokenBalances, "postTokenBalances");
   for (const endpoint of [input, output]) {
+    if (endpoint.system) {
+      const before = array(meta.preBalances, "preBalances"),
+        after = array(meta.postBalances, "postBalances");
+      if (before.length !== keys.length || after.length !== keys.length)
+        fail("missing native balance evidence");
+      let delta =
+        BigInt(integer(after[ownerIndex], "native post balance")) -
+        BigInt(integer(before[ownerIndex], "native pre balance"));
+      if (ownerIndex === 0)
+        delta += BigInt(integer(meta.fee, "transaction fee"));
+      const effect = (ix: ObjectValue, within: boolean): bigint => {
+        const p = parsed(ix);
+        if (!p) {
+          if (
+            Array.isArray(ix.accounts) &&
+            ix.accounts.includes(owner) &&
+            ix.programId !== "ComputeBudget111111111111111111111111111111" &&
+            !within
+          )
+            fail("opaque native mutation outside swap");
+          return 0n;
+        }
+        const info = p.info;
+        if (ix.programId === SYSTEM) {
+          const outgoing = info.source === owner,
+            incoming = info.destination === owner || info.newAccount === owner;
+          if (!outgoing && !incoming) return 0n;
+          if (p.type === "advanceNonce") return 0n;
+          if (
+            ![
+              "transfer",
+              "transferWithSeed",
+              "createAccount",
+              "createAccountWithSeed",
+            ].includes(p.type)
+          )
+            fail("unsupported native mutation");
+          if (
+            within &&
+            !["createAccount", "createAccountWithSeed"].includes(p.type)
+          )
+            return 0n;
+          const value = BigInt(
+            integer(info.lamports, "native instruction amount"),
+          );
+          return (incoming ? value : 0n) - (outgoing ? value : 0n);
+        }
+        if (p.type === "closeAccount" && info.destination === owner)
+          fail("unproven native account closure");
+        if (!within && (info.destination === owner || info.source === owner))
+          fail("unproven native mutation outside swap");
+        if (
+          !within &&
+          ![
+            TOKEN,
+            TOKEN22,
+            ATA_PROGRAM,
+            "ComputeBudget111111111111111111111111111111",
+          ].includes(String(ix.programId)) &&
+          JSON.stringify(info).includes(owner)
+        )
+          fail("unsupported external native instruction");
+        return 0n;
+      };
+      for (const ix of outside) delta -= effect(ix, false);
+      for (const ix of swapInner) delta -= effect(ix, true);
+      endpoint.delta = delta;
+      continue;
+    }
+
     const decodeRow = (
       row: ObjectValue | undefined,
     ): { amount: bigint; decimals: number } | null => {
@@ -363,6 +418,18 @@ export function normalizeJupiterFill(
         p.info.mint === endpoint.mint
       );
     });
+    // ATA creation may initialize immutable ownership before initializeAccount3.
+    // This affects authority metadata, not balances, and is accepted only on a
+    // newly created canonical endpoint with independently matched lifecycle.
+    const immutableInitialization = (
+      ix: ObjectValue,
+      p: ParsedInstruction | null,
+    ) =>
+      !before &&
+      created &&
+      ix.programId === endpoint.program &&
+      p?.type === "initializeImmutableOwner" &&
+      p.info.account === endpoint.ata;
     const closed = allInstructions.some((ix) => {
       const p = parsed(ix);
       return (
@@ -399,22 +466,23 @@ export function normalizeJupiterFill(
             "closeAccount",
             "create",
             "createIdempotent",
-          ].includes(p.type)
+          ].includes(p.type) &&
+          !immutableInitialization(ix, p)
         )
-          fail("unsupported endpoint mutation outside Jupiter route");
+          fail("unsupported endpoint mutation outside direct swap");
         if (
           p &&
           (p.info.source === endpoint.ata ||
             p.info.destination === endpoint.ata) &&
           p.type !== "closeAccount"
         )
-          fail("endpoint transfer outside Jupiter route");
+          fail("endpoint transfer outside direct swap");
         if (
           !p &&
           Array.isArray(ix.accounts) &&
           ix.accounts.includes(endpoint.ata)
         )
-          fail("opaque endpoint mutation outside Jupiter route");
+          fail("opaque endpoint mutation outside direct swap");
       }
     let transferCount = 0,
       transferDelta = 0n;
@@ -438,9 +506,10 @@ export function normalizeJupiterFill(
           "syncNative",
           "create",
           "createIdempotent",
-        ].includes(p.type)
+        ].includes(p.type) &&
+        !immutableInitialization(ix, p)
       )
-        fail("unsupported endpoint mutation within Jupiter route");
+        fail("unsupported endpoint mutation within direct swap");
       const info = p.info,
         outgoing = info.source === endpoint.ata,
         incoming = info.destination === endpoint.ata;
@@ -481,7 +550,7 @@ export function normalizeJupiterFill(
       transferDelta += (incoming ? value : 0n) - (outgoing ? value : 0n);
     }
     if (!transferCount)
-      fail("missing endpoint transfer evidence within Jupiter route");
+      fail("missing endpoint transfer evidence within direct swap");
     if (endpoint.native) endpoint.delta = transferDelta;
   }
   const inputAmount = -input.delta,

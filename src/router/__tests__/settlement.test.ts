@@ -178,6 +178,19 @@ function fixture(input = INPUT, output = OUTPUT) {
 }
 
 describe("normalizeJupiterFill", () => {
+  it("retains direct-pair policy during funded SPL settlement", () => {
+    const { tx, expected } = fixture();
+    expect(
+      normalizeJupiterFill(tx, { ...expected, directPairOnly: true })
+        .outputAmount,
+    ).toBe(990n);
+    expect(() =>
+      normalizeJupiterFill(structuredClone(maskBuyReceipt), {
+        ...maskBuyExpectation,
+        directPairOnly: true,
+      }),
+    ).toThrow(/direct pair/);
+  });
   // Actual local Surfpool 1.6.0 v1 execution receipts (2026-09-27), with fresh
   // disposable wallet public keys. No decimal or other RPC metadata repairs.
   it("normalizes the actual split MASK buy receipt to net Token2022 output", () => {

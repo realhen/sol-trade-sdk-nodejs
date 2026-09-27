@@ -618,6 +618,25 @@ at confirmed or finalized commitment and persist the prepared endpoint, amount, 
 and `swapInstructionData` expectations before broadcast. Incomplete or ambiguous
 receipts are rejected rather than converted into estimated fills.
 
+For an already-funded pool quote token, call
+`discoverPoolQuoteMint(connection, poolAddress, targetMint)` to authenticate the
+opposite pool mint, then request `quoteMint → targetMint` for buys and
+`targetMint → quoteMint` for sells. Identity discovery supports all eleven venue
+families and may use a cache-backed connection; it does not establish executable
+liquidity or token-extension support. Set `directPairOnly: true` and keep both
+native flags false to prohibit extra conversions and split routes. This checks
+the decoded instruction's single 10000-bps step and the exact endpoint graph.
+Jupiter V2 `/build` has no documented direct-only request parameter, so a returned
+multihop route is rejected even when a direct pool might exist. This policy does
+not pin Jupiter to the pool used for identity discovery. Persist `directPairOnly`
+with the fill expectation so receipt validation retains the same restriction.
+
+`prepareJupiterSellForQuoteValue({ ...options, targetAmount })` sizes a sale in
+any output mint's atomic units; it uses the same bounded search and trade
+validation as the SOL helper below. Neither helper obtains missing input tokens
+or converts SOL to fund the requested input. The caller checks its wallet's
+existing spendable input balance before signing.
+
 `prepareJupiterSellForSolValue` sizes a token sale for an expected SOL value within a
 bounded eight-quote search, never exceeding supplied holdings or the expected target.
 Its default target tolerance is 10 bps below the target; execution still varies within
@@ -635,7 +654,42 @@ request limits. No fallback signs an unchecked provider transaction.
 Validation commands: `npm test`, `npm run test:router:package` (after `npm run build`)
 and `npm run test:router:surfpool`. The latter only signs generated wallets against a
 verified loopback Surfpool runtime; it fetches unsigned Jupiter builds over HTTPS.
+`npm run test:router:funded` additionally checks a locally funded MET/Pump pair in
+both directions, single-leg routing, and strict raw receipt balance deltas.
 Use Surfpool 1.6.0 for v1 transaction support. Read its evidence report for individual
 cases: unavailable upstream quotes and malformed local receipt metadata are reported
 separately from successful execution. Optional harness-only receipt metadata correction
 never changes the SDK's strict receipt validator or the extension's accounting behavior.
+
+### Pool-specific direct swaps (no routing service)
+
+`sol-trade-sdk/direct` and `sol-trade-sdk/direct/browser` expose a single API for
+Pump.fun, PumpSwap, Raydium CPMM/AMM v4/LaunchLab/CLMM, Orca Whirlpool, and
+Meteora DAMM v1/v2, DLMM, and DBC. No Jupiter account or API key is required.
+
+```ts
+import { prepareDirectMarket, quoteDirectSwap, buildDirectSwap,
+  normalizeDirectFill } from 'sol-trade-sdk/direct';
+const market = await prepareDirectMarket(connection, pool, targetMint);
+const quote = quoteDirectSwap(market, market.quoteMint, amountIn, 100);
+const { instructions, expectation } = await buildDirectSwap(market, quote, owner);
+// Caller composes, signs, submits, and retrieves a confirmed jsonParsed receipt.
+const fill = normalizeDirectFill(confirmedReceipt, expectation);
+```
+
+Preparation reads only through the supplied Connection and can run against a
+recording or cache-only connection. Rebuild the market when its streamed account
+dependencies change. Quotes and builds perform no RPC; quote objects are bound
+to the exact prepared market. `sizeDirectSellForQuoteValue(market, targetAmount,
+maximumInputAmount, slippageBps)` finds a token-input quote whose protected output
+reaches the requested quote-token value using bounded local integer search.
+
+Non-native swaps spend an already funded input-token ATA and return the pool's
+other token. The SDK does not convert SOL to fund a non-SOL quote. Native SOL
+endpoints use wrapping/cleanup where the venue requires WSOL; Pump native curves
+use their native-SOL instructions. Token-2022 transfer fees are supported by
+CPMM, DAMM v2, CLMM, Orca and DLMM; unsupported extensions/configurations fail
+closed. Persist the complete returned expectation for receipt verification;
+settled amounts come from confirmed balance changes and verified swap scope,
+including partial actual input on Orca. The older `router` API remains available
+for compatibility, separately from this direct API.

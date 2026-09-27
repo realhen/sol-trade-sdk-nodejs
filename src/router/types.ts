@@ -17,6 +17,11 @@ export interface PrepareJupiterRouteOptions {
   now?: () => number;
   /** Local quote lifetime, from preparation start. Default 10 seconds; maximum 30 seconds. */
   maxAgeMs?: number;
+  /** Require exactly one 100% on-chain swap leg between the requested mints.
+   * V2 /build has no documented direct-only request parameter; a multihop or
+   * split response is rejected, never silently converted or retried as a route.
+   */
+  directPairOnly?: boolean;
   /** Explicit native SOL input: fund the owner's WSOL ATA by exactly amountIn. Does not close it. */
   wrapNativeInput?: boolean;
   /** Explicit native SOL output: close the owner's WSOL ATA to that owner, including any prior WSOL balance. */
@@ -45,6 +50,7 @@ export interface PreparedRouterTrade {
   expiresAtMs: number;
   wrapNativeInput: boolean;
   unwrapNativeOutput: boolean;
+  directPairOnly: boolean;
   /** A bonding-curve leg permits spending less than the input budget; settle actual debits. */
   allowsPartialFill: boolean;
   routeLegs: RouterLeg[];
@@ -74,5 +80,16 @@ export interface PrepareJupiterSellForSolValueOptions extends Omit<
   maximumInputAmount: bigint;
   targetLamports: bigint;
   /** Expected SOL output may undershoot by this tolerance, never exceed the target. Default 10 bps. */
+  targetToleranceBps?: number;
+}
+
+export interface PrepareJupiterSellForQuoteValueOptions extends Omit<
+  PrepareJupiterRouteOptions,
+  "amountIn"
+> {
+  maximumInputAmount: bigint;
+  /** Desired expected output, in outputMint atomic units. */
+  targetAmount: bigint;
+  /** Expected output may undershoot by this tolerance, never exceed the target. Default 10 bps. */
   targetToleranceBps?: number;
 }

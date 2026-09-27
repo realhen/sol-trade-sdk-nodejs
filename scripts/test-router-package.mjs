@@ -7,6 +7,8 @@ const require = createRequire(import.meta.url);
 const names = [
   "prepareJupiterRoute",
   "prepareJupiterSellForSolValue",
+  "prepareJupiterSellForQuoteValue",
+  "discoverPoolQuoteMint",
   "assertRouterTradeFresh",
   "normalizeJupiterFill",
 ];
