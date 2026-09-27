@@ -1,0 +1,592 @@
+{
+  "pool": {
+    "publicKey": "B1AdQ85N2mJ2xtMg9bgThhsPoA6T3M26rt4TChWSiPpr"
+  },
+  "baseMint": {
+    "publicKey": "3iQL8BFS2vE7mww4ehAqQHAsbmRNCrPxizWAT2Zfyr9y"
+  },
+  "quoteMint": {
+    "publicKey": "So11111111111111111111111111111111111111112"
+  },
+  "remainingAccounts": [],
+  "client": {
+    "poolState": {
+      "lpMint": {
+        "publicKey": "6WFfTkMcMUPYQ1wbkaemG3F2nXGgz8MQsosZzBXf4SgQ"
+      },
+      "tokenAMint": {
+        "publicKey": "3iQL8BFS2vE7mww4ehAqQHAsbmRNCrPxizWAT2Zfyr9y"
+      },
+      "tokenBMint": {
+        "publicKey": "So11111111111111111111111111111111111111112"
+      },
+      "aVault": {
+        "publicKey": "64K4zQJMzoVvVMVMChfPuUuohHJroMDQt7ZdEWF3AUbe"
+      },
+      "bVault": {
+        "publicKey": "FERjPVNEa7Udq8CEv68h6tPL46Tq7ieE49HrE2wea3XT"
+      },
+      "aVaultLp": {
+        "publicKey": "H7ecqNb5xvuHBuu27t6EJqFDSxomw1G6sMo4hizD3wZb"
+      },
+      "bVaultLp": {
+        "publicKey": "DdW4Xzo3192gkSS5Yrvf1uhqFaHgEfA1L54XH1qUXpQZ"
+      },
+      "aVaultLpBump": 255,
+      "enabled": true,
+      "protocolTokenAFee": {
+        "publicKey": "A7J6RJoR6bmkKuZbZn1NyxCxDm1fSSVrgQ5kB4gCcisf"
+      },
+      "protocolTokenBFee": {
+        "publicKey": "nNrWYAhnXvPSWcSvNxngb5Q6xmfa3ZNPYgV6PhjVBn2"
+      },
+      "feeLastUpdatedAt": {
+        "bn": "1739877932"
+      },
+      "padding0": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fees": {
+        "tradeFeeNumerator": {
+          "bn": "300"
+        },
+        "tradeFeeDenominator": {
+          "bn": "100000"
+        },
+        "protocolTradeFeeNumerator": {
+          "bn": "20000"
+        },
+        "protocolTradeFeeDenominator": {
+          "bn": "100000"
+        }
+      },
+      "poolType": {
+        "permissionless": {}
+      },
+      "stake": {
+        "publicKey": "11111111111111111111111111111111"
+      },
+      "totalLockedLp": {
+        "bn": "5743563735"
+      },
+      "bootstrapping": {
+        "activationPoint": {
+          "bn": "1738820726"
+        },
+        "whitelistedVault": {
+          "publicKey": "11111111111111111111111111111111"
+        },
+        "poolCreator": {
+          "publicKey": "11111111111111111111111111111111"
+        },
+        "activationType": 1
+      },
+      "partnerInfo": {
+        "feeNumerator": {
+          "bn": "0"
+        },
+        "partnerAuthority": {
+          "publicKey": "11111111111111111111111111111111"
+        },
+        "pendingFeeA": {
+          "bn": "0"
+        },
+        "pendingFeeB": {
+          "bn": "0"
+        }
+      },
+      "padding": {
+        "padding0": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "padding1": [
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          }
+        ],
+        "padding2": [
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          },
+          {
+            "bn": "0"
+          }
+        ]
+      },
+      "curveType": {
+        "constantProduct": {}
+      },
+      "padding1": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "lpSupply": {
+        "bn": "50224657600430"
+      }
+    },
+    "vaultA": {
+      "vaultState": {
+        "enabled": 1,
+        "bumps": {
+          "vaultBump": 250,
+          "tokenVaultBump": 253
+        },
+        "totalAmount": {
+          "bn": "1672236869125737"
+        },
+        "tokenVault": {
+          "publicKey": "rYviub1bBnw6jJyL7RERZYgjNnwFeWE5hcxaTsxLuxo"
+        },
+        "feeVault": {
+          "publicKey": "11111111111111111111111111111111"
+        },
+        "tokenMint": {
+          "publicKey": "3iQL8BFS2vE7mww4ehAqQHAsbmRNCrPxizWAT2Zfyr9y"
+        },
+        "lpMint": {
+          "publicKey": "7eiuDUFPSKo7Ua1DczNHcCbAh9uq1QmNKVR7jw7AbEo4"
+        },
+        "strategies": [
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          }
+        ],
+        "base": {
+          "publicKey": "HWzXGcGHy4tcpYfaRDCyLNzXqBTv3E6BttpCH2vJxArv"
+        },
+        "admin": {
+          "publicKey": "DHLXnJdACTY83yKwnUkeoDjqi4QBbsYGa1v8tJL76ViX"
+        },
+        "operator": {
+          "publicKey": "DHLXnJdACTY83yKwnUkeoDjqi4QBbsYGa1v8tJL76ViX"
+        },
+        "lockedProfitTracker": {
+          "lastUpdatedLockedProfit": {
+            "bn": "0"
+          },
+          "lastReport": {
+            "bn": "0"
+          },
+          "lockedProfitDegradation": {
+            "bn": "46296296"
+          }
+        }
+      }
+    },
+    "vaultB": {
+      "vaultState": {
+        "enabled": 1,
+        "bumps": {
+          "vaultBump": 255,
+          "tokenVaultBump": 250
+        },
+        "totalAmount": {
+          "bn": "246377740993495"
+        },
+        "tokenVault": {
+          "publicKey": "HZeLxbZ9uHtSpwZC3LBr4Nubd14iHwz7bRSghRZf5VCG"
+        },
+        "feeVault": {
+          "publicKey": "97VoVwTLDxfJMntfEVS74rs6fDVptCbCx23aRurcCRMd"
+        },
+        "tokenMint": {
+          "publicKey": "So11111111111111111111111111111111111111112"
+        },
+        "lpMint": {
+          "publicKey": "FZN7QZ8ZUUAxMPfxYEYkH3cXUASzH8EqA6B4tyCL8f1j"
+        },
+        "strategies": [
+          {
+            "publicKey": "uVKHtBi36zXbcKKpSDKMVP3Vqbah8pshYqCqyoaV8ui"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          },
+          {
+            "publicKey": "11111111111111111111111111111111"
+          }
+        ],
+        "base": {
+          "publicKey": "HWzXGcGHy4tcpYfaRDCyLNzXqBTv3E6BttpCH2vJxArv"
+        },
+        "admin": {
+          "publicKey": "DHLXnJdACTY83yKwnUkeoDjqi4QBbsYGa1v8tJL76ViX"
+        },
+        "operator": {
+          "publicKey": "2nGpQ5VarkUBPidNgcvMc7JH5ctkRFX4bbtByFjntJQd"
+        },
+        "lockedProfitTracker": {
+          "lastUpdatedLockedProfit": {
+            "bn": "962117181"
+          },
+          "lastReport": {
+            "bn": "1790484388"
+          },
+          "lockedProfitDegradation": {
+            "bn": "46296296"
+          }
+        }
+      }
+    },
+    "accountsInfo": {
+      "currentTime": {
+        "bn": "1790486833"
+      },
+      "currentSlot": {
+        "bn": "450902235"
+      },
+      "poolVaultALp": {
+        "bn": "837481857943533"
+      },
+      "poolVaultBLp": {
+        "bn": "4839675353790"
+      },
+      "vaultALpSupply": {
+        "bn": "1672236869125737"
+      },
+      "vaultBLpSupply": {
+        "bn": "218659851820581"
+      },
+      "vaultAReserve": {
+        "bn": "1672236869125737"
+      },
+      "vaultBReserve": {
+        "bn": "208639039675760"
+      },
+      "poolLpSupply": {
+        "bn": "50224657600430"
+      }
+    },
+    "depegAccounts": []
+  }
+}
