@@ -1,4 +1,5 @@
 import { Buffer } from 'buffer';
+import { resolveMintPair, validateSwapAmounts, validatePoolTokenProgram } from './mint-pair';
 /**
  * Raydium CPMM (Concentrated Pool Market Maker) Protocol Instruction Builder
  *
@@ -162,9 +163,12 @@ export interface RaydiumCpmmParams {
 export interface BuildRaydiumCpmmBuyInstructionsParams {
   payer: Keypair | PublicKey;
   outputMint: PublicKey;
+  inputMint?: PublicKey;
   inputAmount: bigint;
   slippageBasisPoints?: bigint;
   fixedOutputAmount?: bigint;
+  /** Exact-input output floor; cannot be combined with fixedOutputAmount. */
+  minimumOutputAmount?: bigint;
   createInputMintAta?: boolean;
   createOutputMintAta?: boolean;
   closeInputMintAta?: boolean;
@@ -174,9 +178,12 @@ export interface BuildRaydiumCpmmBuyInstructionsParams {
 export interface BuildRaydiumCpmmSellInstructionsParams {
   payer: Keypair | PublicKey;
   inputMint: PublicKey;
+  outputMint?: PublicKey;
   inputAmount: bigint;
   slippageBasisPoints?: bigint;
   fixedOutputAmount?: bigint;
+  /** Exact-input output floor; cannot be combined with fixedOutputAmount. */
+  minimumOutputAmount?: bigint;
   createOutputMintAta?: boolean;
   closeOutputMintAta?: boolean;
   closeInputMintAta?: boolean;
@@ -195,7 +202,7 @@ export function buildRaydiumCpmmBuyInstructions(
 ): TransactionInstruction[] {
   const {
     payer,
-    outputMint,
+    outputMint: requestedOutputMint,
     inputAmount,
     slippageBasisPoints = BigInt(1000),
     fixedOutputAmount,
@@ -205,15 +212,12 @@ export function buildRaydiumCpmmBuyInstructions(
     protocolParams,
   } = params;
 
-  if (inputAmount === BigInt(0)) {
-    throw new Error("Amount cannot be zero");
-  }
+  validateSwapAmounts(params);
 
   const payerPubkey = payer instanceof Keypair ? payer.publicKey : payer;
   const instructions: TransactionInstruction[] = [];
 
   const WSOL_TOKEN_ACCOUNT = new PublicKey("So11111111111111111111111111111111111111112");
-  const USDC_TOKEN_ACCOUNT = new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
 
   const {
     ammConfig,
@@ -228,23 +232,11 @@ export function buildRaydiumCpmmBuyInstructions(
     observationState,
   } = protocolParams;
 
-  // Check pool type
-  const isWsol = baseMint.equals(WSOL_TOKEN_ACCOUNT) || quoteMint.equals(WSOL_TOKEN_ACCOUNT);
-  const isUsdc = baseMint.equals(USDC_TOKEN_ACCOUNT) || quoteMint.equals(USDC_TOKEN_ACCOUNT);
-
-  if (!isWsol && !isUsdc) {
-    throw new Error("Pool must contain WSOL or USDC");
-  }
-
-  // Determine swap direction
-  const isBaseIn = baseMint.equals(WSOL_TOKEN_ACCOUNT) || baseMint.equals(USDC_TOKEN_ACCOUNT);
-  const inputMint = isBaseIn ? baseMint : quoteMint;
+  const { inputMint, outputMint, aToB: isBaseIn } = resolveMintPair(baseMint, quoteMint, params.inputMint, requestedOutputMint);
+  validatePoolTokenProgram(baseMint, baseTokenProgram);
+  validatePoolTokenProgram(quoteMint, quoteTokenProgram);
   const inputTokenProgram = isBaseIn ? baseTokenProgram : quoteTokenProgram;
-  const expectedOutputMint = isBaseIn ? quoteMint : baseMint;
   const outputTokenProgram = isBaseIn ? quoteTokenProgram : baseTokenProgram;
-  if (!outputMint.equals(expectedOutputMint)) {
-    throw new Error(`outputMint must match Raydium CPMM pool side ${expectedOutputMint.toBase58()}`);
-  }
 
   // Derive pool state
   const poolState = protocolParams.poolState && !protocolParams.poolState.equals(PublicKey.default)
@@ -253,7 +245,7 @@ export function buildRaydiumCpmmBuyInstructions(
 
   // Calculate output only for base-in swaps; fixed-output swaps pass max input directly.
   const minimumAmountOut =
-    fixedOutputAmount ??
+    params.minimumOutputAmount ?? fixedOutputAmount ??
     computeRaydiumCpmmSwapAmount(
       baseReserve,
       quoteReserve,
@@ -391,7 +383,7 @@ export function buildRaydiumCpmmSellInstructions(
 ): TransactionInstruction[] {
   const {
     payer,
-    inputMint,
+    inputMint: requestedInputMint,
     inputAmount,
     slippageBasisPoints = BigInt(1000),
     fixedOutputAmount,
@@ -401,15 +393,12 @@ export function buildRaydiumCpmmSellInstructions(
     protocolParams,
   } = params;
 
-  if (inputAmount === BigInt(0)) {
-    throw new Error("Amount cannot be zero");
-  }
+  validateSwapAmounts(params);
 
   const payerPubkey = payer instanceof Keypair ? payer.publicKey : payer;
   const instructions: TransactionInstruction[] = [];
 
   const WSOL_TOKEN_ACCOUNT = new PublicKey("So11111111111111111111111111111111111111112");
-  const USDC_TOKEN_ACCOUNT = new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
 
   const {
     ammConfig,
@@ -424,23 +413,11 @@ export function buildRaydiumCpmmSellInstructions(
     observationState,
   } = protocolParams;
 
-  // Check pool type
-  const isWsol = baseMint.equals(WSOL_TOKEN_ACCOUNT) || quoteMint.equals(WSOL_TOKEN_ACCOUNT);
-  const isUsdc = baseMint.equals(USDC_TOKEN_ACCOUNT) || quoteMint.equals(USDC_TOKEN_ACCOUNT);
-
-  if (!isWsol && !isUsdc) {
-    throw new Error("Pool must contain WSOL or USDC");
-  }
-
-  // Determine swap direction
-  const isQuoteOut = quoteMint.equals(WSOL_TOKEN_ACCOUNT) || quoteMint.equals(USDC_TOKEN_ACCOUNT);
-  const expectedInputMint = isQuoteOut ? baseMint : quoteMint;
+  const { inputMint, outputMint, aToB: isQuoteOut } = resolveMintPair(baseMint, quoteMint, requestedInputMint, params.outputMint);
+  validatePoolTokenProgram(baseMint, baseTokenProgram);
+  validatePoolTokenProgram(quoteMint, quoteTokenProgram);
   const inputTokenProgram = isQuoteOut ? baseTokenProgram : quoteTokenProgram;
-  const outputMint = isQuoteOut ? quoteMint : baseMint;
   const outputTokenProgram = isQuoteOut ? quoteTokenProgram : baseTokenProgram;
-  if (!inputMint.equals(expectedInputMint)) {
-    throw new Error(`inputMint must match Raydium CPMM pool side ${expectedInputMint.toBase58()}`);
-  }
 
   // Derive pool state
   const poolState = protocolParams.poolState && !protocolParams.poolState.equals(PublicKey.default)
@@ -449,7 +426,7 @@ export function buildRaydiumCpmmSellInstructions(
 
   // Calculate output only for base-in swaps; fixed-output swaps pass max input directly.
   const minimumAmountOut =
-    fixedOutputAmount ??
+    params.minimumOutputAmount ?? fixedOutputAmount ??
     computeRaydiumCpmmSwapAmount(
       baseReserve,
       quoteReserve,
@@ -570,7 +547,9 @@ export function buildRaydiumCpmmSellInstructions(
 
 // ===== Pool State Decoder - from Rust: src/instruction/utils/raydium_cpmm_types.rs =====
 
+/** Raw body length, excluding the Anchor discriminator. */
 export const RAYDIUM_CPMM_POOL_STATE_SIZE = 629;
+export const RAYDIUM_CPMM_POOL_STATE_DISCRIMINATOR = Buffer.from([247, 237, 227, 245, 215, 195, 222, 70]);
 
 export interface RaydiumCPMMpoolState {
   ammConfig: PublicKey;
@@ -598,7 +577,7 @@ export interface RaydiumCPMMpoolState {
 }
 
 /**
- * Decode a Raydium CPMM pool state from account data
+ * Decode a Raydium CPMM raw pool body (caller must strip the 8-byte Anchor discriminator).
  * 100% from Rust: src/instruction/utils/raydium_cpmm_types.rs pool_state_decode
  */
 export function decodeRaydiumCPMMpoolState(data: Buffer): RaydiumCPMMpoolState | null {
@@ -732,14 +711,17 @@ export function decodeRaydiumCPMMpoolState(data: Buffer): RaydiumCPMMpoolState |
  * 100% from Rust: src/instruction/utils/raydium_cpmm.rs fetch_pool_state
  */
 export async function fetchRaydiumCPMMpoolState(
-  connection: { getAccountInfo: (pubkey: PublicKey) => Promise<{ value?: { data: Buffer } }> },
+  connection: { getAccountInfo: (pubkey: PublicKey) => Promise<{ value?: { data: Buffer; owner?: PublicKey } }> },
   poolAddress: PublicKey
 ): Promise<RaydiumCPMMpoolState | null> {
   const account = await connection.getAccountInfo(poolAddress);
   if (!account?.value?.data) {
     return null;
   }
-  return decodeRaydiumCPMMpoolState(account.value.data);
+  const { data, owner } = account.value;
+  if (!owner?.equals(RAYDIUM_CPMM_PROGRAM_ID) || data.length < RAYDIUM_CPMM_POOL_STATE_SIZE + 8 ||
+      !data.subarray(0, 8).equals(RAYDIUM_CPMM_POOL_STATE_DISCRIMINATOR)) return null;
+  return decodeRaydiumCPMMpoolState(data.subarray(8));
 }
 
 /**

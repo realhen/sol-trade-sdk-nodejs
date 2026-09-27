@@ -1,3 +1,36 @@
+## Direct non-SOL pairs in this fork (0.5.0)
+
+The legacy CPMM, AMM v4, DAMM v2, PumpSwap and LaunchLab builders now accept explicit pool mint pairs. A requested input or output identifies the direction; the omitted side is inferred from the supplied pool. Mismatched pairs fail before instruction construction. PumpSwap chooses its on-chain buy/sell instruction from the pool's base/quote orientation, independently of the application's buy/sell label. The five prepared venue adapters below already accept arbitrary pool pairs.
+
+For the root `TradingClient` API, `payWith`, `receiveAs`, `inputTokenType` and `outputTokenType` accept either the existing `TradeTokenType` enum or an explicit `PublicKey`. The client forwards both requested mints to each builder. Existing high-level amount fields use numbers; use the keyless builders for bigint input amounts outside JavaScript's exact integer range.
+
+```ts
+import { raydiumCpmm } from 'sol-trade-sdk/browser';
+
+const instructions = raydiumCpmm.buildRaydiumCpmmBuyInstructions({
+  payer: walletPublicKey,
+  inputMint: quoteMint,
+  outputMint: tokenMint,
+  inputAmount: 1_000_000n,
+  minimumOutputAmount: validatedQuote.minimumOutputAmount,
+  protocolParams: preparedPool,
+  createInputMintAta: false,
+  createOutputMintAta: true,
+});
+```
+
+`minimumOutputAmount` is an exact-input floor in output atomic units, already adjusted for slippage. It is mutually exclusive with `fixedOutputAmount`. The latter retains its existing protocol-specific meaning: CPMM/AMM v4 exact-output mode, PumpSwap buy mode, or the legacy LaunchLab/DAMM v2 output floor. DAMM v2 still permits partial fills, so consumers must reconcile actual debits and credits. Caller-supplied floors require current quotes and applicable transfer fees.
+
+LaunchLab parameters carry `baseMint`, `quoteMint`, `quoteTokenProgram` and the quote-specific global configuration. Custom configurations require explicit account identities and an output floor; the SDK does not reuse SOL fee assumptions for them. `BonkParams.fromMintByRpc(connection, mint, quoteMint)` and `fromPoolByRpc(connection, pool)` load the exact pair and derive creator/platform accounts with its quote mint. The older boolean USD1 selector remains available. Pump curve RPC loading preserves the on-chain quote mint as well.
+
+Compatibility boundaries:
+
+- AMM v4 accepts classic SPL tokens only. LaunchLab and Pump quote assets currently require the classic token program. Token-2022 program selection alone does not establish support for every mint extension.
+- PumpSwap calls without either requested mint retain the old single-SOL/USDC-side inference; token/token and SOL/USDC pairs require explicit direction. Reverse application sells that spend the pool quote now default to exact-input buys, including the protocol volume flag.
+- These are direct swaps. The wallet must hold the selected input asset. This release does not discover funding routes, convert SOL automatically, forward intermediate balance deltas, or integrate the extension's token-page execution and settlement. It does not claim complete Axiom coverage.
+
+Run `npm run test:non-sol:surfpool` against a dedicated loopback Surfpool after building. It checks both directions of a real token/token CPMM pool (including transfer-fee tokens) and a real MET/USDC DAMM v2 pool, actual net balances, existing ATA setup, and venue-specific excessive-slippage rejection. It uses synthetic local wallets and never submits to mainnet. These two pools are execution evidence, not an exhaustive market or mint-extension matrix.
+
 ## Additional venue adapters in this fork (0.4.0)
 
 Raydium CLMM, Orca Whirlpool, Meteora DLMM, Meteora Dynamic Bonding Curve (DBC), and Meteora DAMM v1 now have keyless exact-input adapters. Both swap directions use official venue math; DLMM wraps the pinned SDK's exported bin and fee functions to accept chain time explicitly. DAMM v1 includes constant-product and stable/depeg math. These APIs are separate from the legacy `TradingClient.buy/sell` facade.

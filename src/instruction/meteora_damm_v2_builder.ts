@@ -1,4 +1,5 @@
 import { Buffer } from 'buffer';
+import { resolveMintPair, validateSwapAmounts, validatePoolTokenProgram } from './mint-pair';
 /**
  * Meteora DAMM V2 Protocol Instruction Builder
  *
@@ -15,7 +16,7 @@ import {
 } from "@solana/web3.js";
 import {
   getAssociatedTokenAddressSync,
-  createAssociatedTokenAccountInstruction,
+  createAssociatedTokenAccountIdempotentInstruction,
   TOKEN_PROGRAM_ID,
   createCloseAccountInstruction,
   NATIVE_MINT,
@@ -26,7 +27,6 @@ import {
 // Program IDs and Constants
 // ============================================
 
-const SOL_TOKEN_ACCOUNT = new PublicKey("So11111111111111111111111111111111111111111");
 
 /** Meteora DAMM V2 program ID */
 export const METEORA_DAMM_V2_PROGRAM_ID = new PublicKey(
@@ -88,11 +88,14 @@ export interface MeteoraDammV2Params {
 
 export interface BuildMeteoraDammV2BuyInstructionsParams {
   payer: Keypair | PublicKey;
-  inputMint: PublicKey;
-  outputMint: PublicKey;
+  inputMint?: PublicKey;
+  outputMint?: PublicKey;
   inputAmount: bigint;
   slippageBasisPoints?: bigint;
+  /** Legacy name for the partial-fill minimum output, not an exact-output request. */
   fixedOutputAmount?: bigint;
+  /** Partial-fill exact-input output floor; cannot be combined with fixedOutputAmount. */
+  minimumOutputAmount?: bigint;
   createInputMintAta?: boolean;
   createOutputMintAta?: boolean;
   closeInputMintAta?: boolean;
@@ -101,11 +104,14 @@ export interface BuildMeteoraDammV2BuyInstructionsParams {
 
 export interface BuildMeteoraDammV2SellInstructionsParams {
   payer: Keypair | PublicKey;
-  inputMint: PublicKey;
-  outputMint: PublicKey;
+  inputMint?: PublicKey;
+  outputMint?: PublicKey;
   inputAmount: bigint;
   slippageBasisPoints?: bigint;
+  /** Legacy name for the partial-fill minimum output, not an exact-output request. */
   fixedOutputAmount?: bigint;
+  /** Partial-fill exact-input output floor; cannot be combined with fixedOutputAmount. */
+  minimumOutputAmount?: bigint;
   createOutputMintAta?: boolean;
   closeOutputMintAta?: boolean;
   closeInputMintAta?: boolean;
@@ -115,25 +121,6 @@ export interface BuildMeteoraDammV2SellInstructionsParams {
 // ============================================
 // Instruction Builders
 // ============================================
-
-function isDefaultPublicKey(pubkey: PublicKey): boolean {
-  return pubkey.equals(PublicKey.default);
-}
-
-function isMintMatch(requested: PublicKey, expected: PublicKey): boolean {
-  return (
-    requested.equals(expected) ||
-    (expected.equals(NATIVE_MINT) && requested.equals(SOL_TOKEN_ACCOUNT))
-  );
-}
-
-function ensureExpectedMint(label: string, requested: PublicKey, expected: PublicKey): void {
-  if (!isDefaultPublicKey(requested) && !isMintMatch(requested, expected)) {
-    throw new Error(
-      `${label} must match the Meteora DAMM v2 pool side (${expected.toBase58()}), got ${requested.toBase58()}`
-    );
-  }
-}
 
 /**
  * Build buy instructions for Meteora DAMM V2 protocol
@@ -153,19 +140,16 @@ export function buildMeteoraDammV2BuyInstructions(
     protocolParams,
   } = params;
 
-  if (inputAmount === BigInt(0)) {
-    throw new Error("Amount cannot be zero");
-  }
-
-  if (!fixedOutputAmount) {
-    throw new Error("fixedOutputAmount must be set for Meteora DAMM V2 swap");
+  validateSwapAmounts(params);
+  const minimumOutputAmount = params.minimumOutputAmount ?? fixedOutputAmount;
+  if (minimumOutputAmount === undefined) {
+    throw new Error('minimumOutputAmount or fixedOutputAmount must be set for Meteora DAMM V2 swap');
   }
 
   const payerPubkey = payer instanceof Keypair ? payer.publicKey : payer;
   const instructions: TransactionInstruction[] = [];
 
   const WSOL_TOKEN_ACCOUNT = new PublicKey("So11111111111111111111111111111111111111112");
-  const USDC_TOKEN_ACCOUNT = new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
 
   const {
     pool,
@@ -177,21 +161,9 @@ export function buildMeteoraDammV2BuyInstructions(
     tokenBProgram,
   } = protocolParams;
 
-  // Check pool type
-  const isWsol = tokenAMint.equals(WSOL_TOKEN_ACCOUNT) || tokenBMint.equals(WSOL_TOKEN_ACCOUNT);
-  const isUsdc = tokenAMint.equals(USDC_TOKEN_ACCOUNT) || tokenBMint.equals(USDC_TOKEN_ACCOUNT);
-
-  if (!isWsol && !isUsdc) {
-    throw new Error("Pool must contain WSOL or USDC");
-  }
-
-  // Determine swap direction
-  const isAIn = tokenAMint.equals(WSOL_TOKEN_ACCOUNT) || tokenAMint.equals(USDC_TOKEN_ACCOUNT);
-
-  const inputMint = isAIn ? tokenAMint : tokenBMint;
-  const outputMint = isAIn ? tokenBMint : tokenAMint;
-  ensureExpectedMint("inputMint", requestedInputMint, inputMint);
-  ensureExpectedMint("outputMint", requestedOutputMint, outputMint);
+  const { inputMint, outputMint, aToB: isAIn } = resolveMintPair(tokenAMint, tokenBMint, requestedInputMint, requestedOutputMint);
+  validatePoolTokenProgram(tokenAMint, tokenAProgram);
+  validatePoolTokenProgram(tokenBMint, tokenBProgram);
 
   // Derive user token accounts
   const inputTokenAccount = getAssociatedTokenAddressSync(
@@ -217,7 +189,7 @@ export function buildMeteoraDammV2BuyInstructions(
   if (createInputMintAta && inputMint.equals(WSOL_TOKEN_ACCOUNT)) {
     const wsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, payerPubkey, true);
     instructions.push(
-      createAssociatedTokenAccountInstruction(
+      createAssociatedTokenAccountIdempotentInstruction(
         payerPubkey,
         wsolAta,
         payerPubkey,
@@ -229,13 +201,13 @@ export function buildMeteoraDammV2BuyInstructions(
       SystemProgram.transfer({
         fromPubkey: payerPubkey,
         toPubkey: wsolAta,
-        lamports: Number(inputAmount),
+        lamports: inputAmount,
       })
     );
     instructions.push(createSyncNativeInstruction(wsolAta));
   } else if (createInputMintAta) {
     instructions.push(
-      createAssociatedTokenAccountInstruction(
+      createAssociatedTokenAccountIdempotentInstruction(
         payerPubkey,
         inputTokenAccount,
         payerPubkey,
@@ -248,7 +220,7 @@ export function buildMeteoraDammV2BuyInstructions(
   // Create output mint ATA if needed
   if (createOutputMintAta) {
     instructions.push(
-      createAssociatedTokenAccountInstruction(
+      createAssociatedTokenAccountIdempotentInstruction(
         payerPubkey,
         outputTokenAccount,
         payerPubkey,
@@ -262,10 +234,10 @@ export function buildMeteoraDammV2BuyInstructions(
   const data = Buffer.alloc(25);
   METEORA_DAMM_V2_SWAP2_DISCRIMINATOR.copy(data, 0);
   data.writeBigUInt64LE(inputAmount, 8);
-  data.writeBigUInt64LE(fixedOutputAmount, 16);
+  data.writeBigUInt64LE(minimumOutputAmount, 16);
   data.writeUInt8(METEORA_DAMM_V2_SWAP_MODE_PARTIAL_FILL, 24);
 
-  // Build accounts (13 accounts)
+  // Build accounts (14 accounts including the optional-referral placeholder)
   const accounts: AccountMeta[] = [
     { pubkey: METEORA_DAMM_V2_AUTHORITY, isSigner: false, isWritable: false },
     { pubkey: pool, isSigner: false, isWritable: true },
@@ -278,6 +250,8 @@ export function buildMeteoraDammV2BuyInstructions(
     { pubkey: payerPubkey, isSigner: true, isWritable: true },
     { pubkey: tokenAProgram, isSigner: false, isWritable: false },
     { pubkey: tokenBProgram, isSigner: false, isWritable: false },
+    // Anchor optional accounts still occupy a slot; program ID means no referral.
+    { pubkey: METEORA_DAMM_V2_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: eventAuthority, isSigner: false, isWritable: false },
     { pubkey: METEORA_DAMM_V2_PROGRAM_ID, isSigner: false, isWritable: false },
   ];
@@ -319,19 +293,16 @@ export function buildMeteoraDammV2SellInstructions(
     protocolParams,
   } = params;
 
-  if (inputAmount === BigInt(0)) {
-    throw new Error("Amount cannot be zero");
-  }
-
-  if (!fixedOutputAmount) {
-    throw new Error("fixedOutputAmount must be set for Meteora DAMM V2 swap");
+  validateSwapAmounts(params);
+  const minimumOutputAmount = params.minimumOutputAmount ?? fixedOutputAmount;
+  if (minimumOutputAmount === undefined) {
+    throw new Error('minimumOutputAmount or fixedOutputAmount must be set for Meteora DAMM V2 swap');
   }
 
   const payerPubkey = payer instanceof Keypair ? payer.publicKey : payer;
   const instructions: TransactionInstruction[] = [];
 
   const WSOL_TOKEN_ACCOUNT = new PublicKey("So11111111111111111111111111111111111111112");
-  const USDC_TOKEN_ACCOUNT = new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
 
   const {
     pool,
@@ -343,21 +314,9 @@ export function buildMeteoraDammV2SellInstructions(
     tokenBProgram,
   } = protocolParams;
 
-  // Check pool type
-  const isWsol = tokenBMint.equals(WSOL_TOKEN_ACCOUNT) || tokenAMint.equals(WSOL_TOKEN_ACCOUNT);
-  const isUsdc = tokenBMint.equals(USDC_TOKEN_ACCOUNT) || tokenAMint.equals(USDC_TOKEN_ACCOUNT);
-
-  if (!isWsol && !isUsdc) {
-    throw new Error("Pool must contain WSOL or USDC");
-  }
-
-  // Determine swap direction (selling token for WSOL/USDC)
-  const isAIn = tokenBMint.equals(WSOL_TOKEN_ACCOUNT) || tokenBMint.equals(USDC_TOKEN_ACCOUNT);
-
-  const inputMint = isAIn ? tokenAMint : tokenBMint;
-  const outputMint = isAIn ? tokenBMint : tokenAMint;
-  ensureExpectedMint("inputMint", requestedInputMint, inputMint);
-  ensureExpectedMint("outputMint", requestedOutputMint, outputMint);
+  const { inputMint, outputMint, aToB: isAIn } = resolveMintPair(tokenAMint, tokenBMint, requestedInputMint, requestedOutputMint);
+  validatePoolTokenProgram(tokenAMint, tokenAProgram);
+  validatePoolTokenProgram(tokenBMint, tokenBProgram);
 
   // Derive user token accounts
   const inputTokenAccount = getAssociatedTokenAddressSync(
@@ -383,7 +342,7 @@ export function buildMeteoraDammV2SellInstructions(
   if (createOutputMintAta && outputMint.equals(WSOL_TOKEN_ACCOUNT)) {
     const wsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, payerPubkey, true);
     instructions.push(
-      createAssociatedTokenAccountInstruction(
+      createAssociatedTokenAccountIdempotentInstruction(
         payerPubkey,
         wsolAta,
         payerPubkey,
@@ -393,7 +352,7 @@ export function buildMeteoraDammV2SellInstructions(
     );
   } else if (createOutputMintAta) {
     instructions.push(
-      createAssociatedTokenAccountInstruction(
+      createAssociatedTokenAccountIdempotentInstruction(
         payerPubkey,
         outputTokenAccount,
         payerPubkey,
@@ -407,7 +366,7 @@ export function buildMeteoraDammV2SellInstructions(
   const data = Buffer.alloc(25);
   METEORA_DAMM_V2_SWAP2_DISCRIMINATOR.copy(data, 0);
   data.writeBigUInt64LE(inputAmount, 8);
-  data.writeBigUInt64LE(fixedOutputAmount, 16);
+  data.writeBigUInt64LE(minimumOutputAmount, 16);
   data.writeUInt8(METEORA_DAMM_V2_SWAP_MODE_PARTIAL_FILL, 24);
 
   // Build accounts
@@ -423,6 +382,8 @@ export function buildMeteoraDammV2SellInstructions(
     { pubkey: payerPubkey, isSigner: true, isWritable: true },
     { pubkey: tokenAProgram, isSigner: false, isWritable: false },
     { pubkey: tokenBProgram, isSigner: false, isWritable: false },
+    // Anchor optional accounts still occupy a slot; program ID means no referral.
+    { pubkey: METEORA_DAMM_V2_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: eventAuthority, isSigner: false, isWritable: false },
     { pubkey: METEORA_DAMM_V2_PROGRAM_ID, isSigner: false, isWritable: false },
   ];
@@ -461,8 +422,9 @@ export function buildMeteoraDammV2SellInstructions(
 
 // ===== Pool Types and Decoder - from Rust: src/instruction/utils/meteora_damm_v2_types.rs =====
 
-/** Pool size in bytes */
+/** Raw pool body size in bytes, excluding the Anchor discriminator. */
 export const METEORA_POOL_SIZE = 1104;
+export const METEORA_POOL_DISCRIMINATOR = Buffer.from([241, 154, 109, 4, 17, 177, 109, 188]);
 
 /**
  * Meteora DAMM V2 Pool structure (simplified for essential fields)
@@ -481,7 +443,7 @@ export interface MeteoraDammV2Pool {
 }
 
 /**
- * Decode a Meteora DAMM V2 pool from account data.
+ * Decode a Meteora DAMM V2 raw pool body (without the 8-byte Anchor discriminator).
  * 100% from Rust: src/instruction/utils/meteora_damm_v2_types.rs pool_decode
  */
 export function decodeMeteoraPool(data: Buffer): MeteoraDammV2Pool | null {
@@ -490,8 +452,9 @@ export function decodeMeteoraPool(data: Buffer): MeteoraDammV2Pool | null {
   }
 
   try {
-    // Skip pool_fees structure (first 248 bytes)
-    let offset = 248;
+    // Official cp_amm IDL PoolFeesStruct: base fee 40 + percentages/padding 8
+    // + dynamic fee 96 + padding 16 = 160 bytes. Mints begin at account offset 168.
+    let offset = 160;
 
     // token_a_mint: Pubkey (32 bytes)
     const tokenAMint = new PublicKey(data.subarray(offset, offset + 32));
@@ -568,11 +531,8 @@ export async function fetchMeteoraPool(
     return null;
   }
 
-  // Verify owner is Meteora DAMM V2 program
-  if (account.value.owner && !account.value.owner.equals(METEORA_DAMM_V2_PROGRAM_ID)) {
-    return null;
-  }
-
-  // Skip 8-byte discriminator
-  return decodeMeteoraPool(account.value.data.slice(8));
+  const { data, owner } = account.value;
+  if (!owner?.equals(METEORA_DAMM_V2_PROGRAM_ID) || data.length < METEORA_POOL_SIZE + 8 ||
+      !data.subarray(0, 8).equals(METEORA_POOL_DISCRIMINATOR)) return null;
+  return decodeMeteoraPool(data.subarray(8));
 }

@@ -1,4 +1,5 @@
 import { Buffer } from 'buffer';
+import { resolveMintPair, validateSwapAmounts } from './mint-pair';
 /**
  * Raydium AMM V4 Protocol Instruction Builder
  *
@@ -15,7 +16,7 @@ import {
 } from "@solana/web3.js";
 import {
   getAssociatedTokenAddressSync,
-  createAssociatedTokenAccountInstruction,
+  createAssociatedTokenAccountIdempotentInstruction,
   TOKEN_PROGRAM_ID,
   createCloseAccountInstruction,
   NATIVE_MINT,
@@ -26,7 +27,6 @@ import {
 // Program IDs and Constants
 // ============================================
 
-const SOL_TOKEN_ACCOUNT = new PublicKey("So11111111111111111111111111111111111111111");
 
 /** Raydium AMM V4 program ID */
 export const RAYDIUM_AMM_V4_PROGRAM_ID = new PublicKey(
@@ -100,6 +100,9 @@ export function computeRaydiumAmmV4SwapAmount(
 // ============================================
 
 export interface RaydiumAmmV4Params {
+  /** AMM v4 only supports classic SPL Token; omitted programs retain that default. */
+  coinTokenProgram?: PublicKey;
+  pcTokenProgram?: PublicKey;
   amm: PublicKey;
   coinMint: PublicKey;
   pcMint: PublicKey;
@@ -122,9 +125,12 @@ export interface RaydiumAmmV4Params {
 export interface BuildRaydiumAmmV4BuyInstructionsParams {
   payer: Keypair | PublicKey;
   outputMint: PublicKey;
+  inputMint?: PublicKey;
   inputAmount: bigint;
   slippageBasisPoints?: bigint;
   fixedOutputAmount?: bigint;
+  /** Exact-input output floor; cannot be combined with fixedOutputAmount. */
+  minimumOutputAmount?: bigint;
   createInputMintAta?: boolean;
   createOutputMintAta?: boolean;
   closeInputMintAta?: boolean;
@@ -138,6 +144,8 @@ export interface BuildRaydiumAmmV4SellInstructionsParams {
   inputAmount: bigint;
   slippageBasisPoints?: bigint;
   fixedOutputAmount?: bigint;
+  /** Exact-input output floor; cannot be combined with fixedOutputAmount. */
+  minimumOutputAmount?: bigint;
   createOutputMintAta?: boolean;
   closeOutputMintAta?: boolean;
   closeInputMintAta?: boolean;
@@ -150,21 +158,6 @@ export interface BuildRaydiumAmmV4SellInstructionsParams {
 
 function isDefaultPublicKey(pubkey: PublicKey): boolean {
   return pubkey.equals(PublicKey.default);
-}
-
-function isMintMatch(requested: PublicKey, expected: PublicKey): boolean {
-  return (
-    requested.equals(expected) ||
-    (expected.equals(NATIVE_MINT) && requested.equals(SOL_TOKEN_ACCOUNT))
-  );
-}
-
-function ensureExpectedMint(label: string, requested: PublicKey, expected: PublicKey): void {
-  if (!isDefaultPublicKey(requested) && !isMintMatch(requested, expected)) {
-    throw new Error(
-      `${label} must match the Raydium AMM v4 pool side (${expected.toBase58()}), got ${requested.toBase58()}`
-    );
-  }
 }
 
 function ensureMarketAccounts(params: RaydiumAmmV4Params): void {
@@ -207,15 +200,12 @@ export function buildRaydiumAmmV4BuyInstructions(
     protocolParams,
   } = params;
 
-  if (inputAmount === BigInt(0)) {
-    throw new Error("Amount cannot be zero");
-  }
+  validateSwapAmounts(params);
 
   const payerPubkey = payer instanceof Keypair ? payer.publicKey : payer;
   const instructions: TransactionInstruction[] = [];
 
   const WSOL_TOKEN_ACCOUNT = new PublicKey("So11111111111111111111111111111111111111112");
-  const USDC_TOKEN_ACCOUNT = new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
 
   const {
     amm,
@@ -238,31 +228,13 @@ export function buildRaydiumAmmV4BuyInstructions(
   } = protocolParams;
   ensureMarketAccounts(protocolParams);
 
-  // Check pool type
-  const isWsol = coinMint.equals(WSOL_TOKEN_ACCOUNT) || pcMint.equals(WSOL_TOKEN_ACCOUNT);
-  const isUsdc = coinMint.equals(USDC_TOKEN_ACCOUNT) || pcMint.equals(USDC_TOKEN_ACCOUNT);
-
-  if (!isWsol && !isUsdc) {
-    throw new Error("Pool must contain WSOL or USDC");
+  const { inputMint, outputMint, aToB: isBaseIn } = resolveMintPair(coinMint, pcMint, params.inputMint, requestedOutputMint);
+  for (const program of [protocolParams.coinTokenProgram, protocolParams.pcTokenProgram]) {
+    if (program !== undefined && !program.equals(TOKEN_PROGRAM_ID)) throw new Error('Raydium AMM v4 requires the classic SPL Token program');
   }
-
-  // Determine swap direction
-  const isBaseIn = coinMint.equals(WSOL_TOKEN_ACCOUNT) || coinMint.equals(USDC_TOKEN_ACCOUNT);
-
-  // Calculate output
-  const swapResult = computeRaydiumAmmV4SwapAmount(
-    coinReserve,
-    pcReserve,
-    isBaseIn,
-    inputAmount,
-    slippageBasisPoints
-  );
-  const minimumAmountOut = fixedOutputAmount ?? swapResult.minAmountOut;
-
-  // Determine input/output mints
-  const inputMint = isBaseIn ? coinMint : pcMint;
-  const outputMint = isBaseIn ? pcMint : coinMint;
-  ensureExpectedMint("outputMint", requestedOutputMint, outputMint);
+  const minimumAmountOut = params.minimumOutputAmount ?? fixedOutputAmount ?? computeRaydiumAmmV4SwapAmount(
+    coinReserve, pcReserve, isBaseIn, inputAmount, slippageBasisPoints
+  ).minAmountOut;
 
   // Derive user token accounts
   const userSourceTokenAccount = getAssociatedTokenAddressSync(
@@ -282,7 +254,7 @@ export function buildRaydiumAmmV4BuyInstructions(
   if (createInputMintAta && inputMint.equals(WSOL_TOKEN_ACCOUNT)) {
     const wsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, payerPubkey, true);
     instructions.push(
-      createAssociatedTokenAccountInstruction(
+      createAssociatedTokenAccountIdempotentInstruction(
         payerPubkey,
         wsolAta,
         payerPubkey,
@@ -294,13 +266,13 @@ export function buildRaydiumAmmV4BuyInstructions(
       SystemProgram.transfer({
         fromPubkey: payerPubkey,
         toPubkey: wsolAta,
-        lamports: Number(inputAmount),
+        lamports: inputAmount,
       })
     );
     instructions.push(createSyncNativeInstruction(wsolAta));
   } else if (createInputMintAta) {
     instructions.push(
-      createAssociatedTokenAccountInstruction(
+      createAssociatedTokenAccountIdempotentInstruction(
         payerPubkey,
         userSourceTokenAccount,
         payerPubkey,
@@ -313,7 +285,7 @@ export function buildRaydiumAmmV4BuyInstructions(
   // Create output mint ATA if needed
   if (createOutputMintAta) {
     instructions.push(
-      createAssociatedTokenAccountInstruction(
+      createAssociatedTokenAccountIdempotentInstruction(
         payerPubkey,
         userDestinationTokenAccount,
         payerPubkey,
@@ -392,15 +364,12 @@ export function buildRaydiumAmmV4SellInstructions(
     protocolParams,
   } = params;
 
-  if (inputAmount === BigInt(0)) {
-    throw new Error("Amount cannot be zero");
-  }
+  validateSwapAmounts(params);
 
   const payerPubkey = payer instanceof Keypair ? payer.publicKey : payer;
   const instructions: TransactionInstruction[] = [];
 
   const WSOL_TOKEN_ACCOUNT = new PublicKey("So11111111111111111111111111111111111111112");
-  const USDC_TOKEN_ACCOUNT = new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
 
   const {
     amm,
@@ -423,34 +392,13 @@ export function buildRaydiumAmmV4SellInstructions(
   } = protocolParams;
   ensureMarketAccounts(protocolParams);
 
-  // Check pool type
-  const isWsol = coinMint.equals(WSOL_TOKEN_ACCOUNT) || pcMint.equals(WSOL_TOKEN_ACCOUNT);
-  const isUsdc = coinMint.equals(USDC_TOKEN_ACCOUNT) || pcMint.equals(USDC_TOKEN_ACCOUNT);
-
-  if (!isWsol && !isUsdc) {
-    throw new Error("Pool must contain WSOL or USDC");
+  const { inputMint, outputMint, aToB: isBaseIn } = resolveMintPair(coinMint, pcMint, requestedInputMint, requestedOutputMint);
+  for (const program of [protocolParams.coinTokenProgram, protocolParams.pcTokenProgram]) {
+    if (program !== undefined && !program.equals(TOKEN_PROGRAM_ID)) throw new Error('Raydium AMM v4 requires the classic SPL Token program');
   }
-
-  // Determine swap direction (selling token for WSOL/USDC means pc is output)
-  const isBaseIn = pcMint.equals(WSOL_TOKEN_ACCOUNT) || pcMint.equals(USDC_TOKEN_ACCOUNT);
-
-  // Calculate output
-  const swapResult = computeRaydiumAmmV4SwapAmount(
-    coinReserve,
-    pcReserve,
-    isBaseIn,
-    inputAmount,
-    slippageBasisPoints
-  );
-  const minimumAmountOut = fixedOutputAmount ?? swapResult.minAmountOut;
-
-  // Determine output mint
-  const outputMint = isBaseIn ? pcMint : coinMint;
-  const inputMint = isBaseIn ? coinMint : pcMint;
-  ensureExpectedMint("inputMint", requestedInputMint, inputMint);
-  if (requestedOutputMint) {
-    ensureExpectedMint("outputMint", requestedOutputMint, outputMint);
-  }
+  const minimumAmountOut = params.minimumOutputAmount ?? fixedOutputAmount ?? computeRaydiumAmmV4SwapAmount(
+    coinReserve, pcReserve, isBaseIn, inputAmount, slippageBasisPoints
+  ).minAmountOut;
 
   // Derive user token accounts
   const userSourceTokenAccount = getAssociatedTokenAddressSync(
@@ -470,7 +418,7 @@ export function buildRaydiumAmmV4SellInstructions(
   if (createOutputMintAta && outputMint.equals(WSOL_TOKEN_ACCOUNT)) {
     const wsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, payerPubkey, true);
     instructions.push(
-      createAssociatedTokenAccountInstruction(
+      createAssociatedTokenAccountIdempotentInstruction(
         payerPubkey,
         wsolAta,
         payerPubkey,
@@ -480,7 +428,7 @@ export function buildRaydiumAmmV4SellInstructions(
     );
   } else if (createOutputMintAta) {
     instructions.push(
-      createAssociatedTokenAccountInstruction(
+      createAssociatedTokenAccountIdempotentInstruction(
         payerPubkey,
         userDestinationTokenAccount,
         payerPubkey,

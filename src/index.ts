@@ -94,9 +94,10 @@ export enum TradeTokenType {
   USDC = 'USDC',
 }
 
-/**
- * Account lifecycle policy for high-level trade requests.
- */
+/** Named payment assets or an explicit SPL mint for a direct pair. */
+export type TradeToken = TradeTokenType | PublicKey;
+
+/** Account lifecycle policy for high-level trade requests. */
 export enum AccountPolicy {
   Auto = 'Auto',
   HotPathMinimal = 'HotPathMinimal',
@@ -199,7 +200,7 @@ export interface DurableNonceInfo {
  */
 export interface TradeBuyParams {
   dexType: DexType;
-  inputTokenType: TradeTokenType;
+  inputTokenType: TradeToken;
   mint: PublicKey;
   inputTokenAmount: number;
   slippageBasisPoints?: number;
@@ -213,6 +214,8 @@ export interface TradeBuyParams {
   createMintAta?: boolean;
   durableNonce?: DurableNonceInfo;
   fixedOutputTokenAmount?: number;
+  /** Exact-input minimum output in raw units; does not select exact-output mode. */
+  minimumOutputAmount?: bigint;
   gasFeeStrategy?: GasFeeStrategyConfig;
   simulate?: boolean;
   useExactSolAmount?: boolean;
@@ -224,7 +227,7 @@ export interface TradeBuyParams {
  */
 export interface TradeSellParams {
   dexType: DexType;
-  outputTokenType: TradeTokenType;
+  outputTokenType: TradeToken;
   mint: PublicKey;
   inputTokenAmount: number;
   slippageBasisPoints?: number;
@@ -239,6 +242,8 @@ export interface TradeSellParams {
   closeMintTokenAta?: boolean;
   durableNonce?: DurableNonceInfo;
   fixedOutputTokenAmount?: number;
+  /** Exact-input minimum output in raw units; does not select exact-output mode. */
+  minimumOutputAmount?: bigint;
   gasFeeStrategy?: GasFeeStrategyConfig;
   simulate?: boolean;
   grpcRecvUs?: number;
@@ -248,8 +253,9 @@ export interface TradeSellParams {
  * Simple buy request that describes trade intent instead of low-level ATA flags.
  */
 export interface SimpleBuyParams {
+  minimumOutputAmount?: bigint;
   dexType: DexType;
-  payWith: TradeTokenType;
+  payWith: TradeToken;
   mint: PublicKey;
   amount: BuyAmount;
   extensionParams: DexParamEnum;
@@ -269,8 +275,9 @@ export interface SimpleBuyParams {
  * Simple sell request that describes trade intent instead of low-level ATA flags.
  */
 export interface SimpleSellParams {
+  minimumOutputAmount?: bigint;
   dexType: DexType;
-  receiveAs: TradeTokenType;
+  receiveAs: TradeToken;
   mint: PublicKey;
   amount: SellAmount;
   extensionParams: DexParamEnum;
@@ -289,7 +296,7 @@ export interface SimpleSellParams {
 
 export function createSimpleBuyParams(
   dexType: DexType,
-  payWith: TradeTokenType,
+  payWith: TradeToken,
   mint: PublicKey,
   amount: BuyAmount,
   extensionParams: DexParamEnum,
@@ -313,7 +320,7 @@ export function createSimpleBuyParams(
 
 export function createSimpleBuyParamsWithDurableNonce(
   dexType: DexType,
-  payWith: TradeTokenType,
+  payWith: TradeToken,
   mint: PublicKey,
   amount: BuyAmount,
   extensionParams: DexParamEnum,
@@ -329,7 +336,7 @@ export function createSimpleBuyParamsWithDurableNonce(
 
 export function createSimpleSellParams(
   dexType: DexType,
-  receiveAs: TradeTokenType,
+  receiveAs: TradeToken,
   mint: PublicKey,
   amount: SellAmount,
   extensionParams: DexParamEnum,
@@ -354,7 +361,7 @@ export function createSimpleSellParams(
 
 export function createSimpleSellParamsWithDurableNonce(
   dexType: DexType,
-  receiveAs: TradeTokenType,
+  receiveAs: TradeToken,
   mint: PublicKey,
   amount: SellAmount,
   extensionParams: DexParamEnum,
@@ -774,6 +781,9 @@ export function pumpSwapParamsFromParserTrade(event: ParserPumpSwapTradeEvent): 
  * Bonk protocol parameters
  */
 export interface BonkParams {
+  baseMint?: PublicKey;
+  quoteMint?: PublicKey;
+  quoteTokenProgram?: PublicKey;
   virtualBase: bigint;
   virtualQuote: bigint;
   realBase: bigint;
@@ -809,6 +819,8 @@ export interface RaydiumCpmmParams {
  * Raydium AMM V4 protocol parameters
  */
 export interface RaydiumAmmV4Params {
+  coinTokenProgram?: PublicKey;
+  pcTokenProgram?: PublicKey;
   amm: PublicKey;
   coinMint: PublicKey;
   pcMint: PublicKey;
@@ -1089,7 +1101,7 @@ function buyAccountFlags(policy: AccountPolicy = AccountPolicy.Auto): {
 
 function sellAccountFlags(
   policy: AccountPolicy = AccountPolicy.Auto,
-  receiveAs: TradeTokenType
+  receiveAs: TradeToken
 ): {
   createOutputTokenAta: boolean;
   closeOutputTokenAta: boolean;
@@ -1159,6 +1171,7 @@ export function simpleBuyParamsToTradeBuyParams(
     createMintAta: flags.createMintAta,
     durableNonce: params.durableNonce,
     fixedOutputTokenAmount,
+    minimumOutputAmount: params.minimumOutputAmount,
     gasFeeStrategy: params.gasFeeStrategy,
     simulate: params.simulate ?? false,
     useExactSolAmount,
@@ -1200,6 +1213,7 @@ export function simpleSellParamsToTradeSellParams(
     closeMintTokenAta: flags.closeMintTokenAta,
     durableNonce: params.durableNonce,
     fixedOutputTokenAmount,
+    minimumOutputAmount: params.minimumOutputAmount,
     gasFeeStrategy: params.gasFeeStrategy,
     simulate: params.simulate ?? false,
     grpcRecvUs: params.grpcRecvUs,
@@ -1653,15 +1667,6 @@ export class TradingClient {
         'Must provide recentBlockhash or durableNonce.nonceHash (current nonce blockhash)'
       );
     }
-    if (
-      params.inputTokenType === TradeTokenType.USD1 &&
-      params.dexType !== DexType.Bonk
-    ) {
-      throw new TradeError(
-        1,
-        'USD1 as input is only supported on Bonk (Rust SDK parity)'
-      );
-    }
     validateDexParamEnum(params.dexType, params.extensionParams);
 
     Prefetch.keypair(this.payer);
@@ -1731,15 +1736,6 @@ export class TradingClient {
       throw new TradeError(
         1,
         'Must provide recentBlockhash or durableNonce.nonceHash (current nonce blockhash)'
-      );
-    }
-    if (
-      params.outputTokenType === TradeTokenType.USD1 &&
-      params.dexType !== DexType.Bonk
-    ) {
-      throw new TradeError(
-        1,
-        'USD1 as output is only supported on Bonk (Rust SDK parity)'
       );
     }
     validateDexParamEnum(params.dexType, params.extensionParams);
@@ -1896,6 +1892,7 @@ export class TradingClient {
           payer: this.payer.publicKey,
           outputMint: params.mint,
           inputAmount: inputAmt,
+          minimumOutputAmount: params.minimumOutputAmount,
           slippageBasisPoints: slippage,
           fixedOutputAmount:
             params.fixedOutputTokenAmount !== undefined
@@ -1927,10 +1924,16 @@ export class TradingClient {
           quoteTokenProgram: p.quoteTokenProgram,
           isMayhemMode: p.isMayhemMode,
           isCashbackCoin: p.isCashbackCoin,
+          coinCreator: p.coinCreator,
+          feeBasisPoints: p.feeBasisPoints,
+          cashbackFeeBasisPoints: p.cashbackFeeBasisPoints,
         };
         return buildPumpSwapBuyInstructions({
           payer: this.payer.publicKey,
+          inputMint: this.getInputMint(params.inputTokenType),
+          outputMint: params.mint,
           inputAmount: inputAmt,
+          minimumOutputAmount: params.minimumOutputAmount,
           slippageBasisPoints: slippage,
           protocolParams,
           createInputMintAta: params.createInputTokenAta ?? true,
@@ -1959,11 +1962,16 @@ export class TradingClient {
           platformAssociatedAccount: p.platformAssociatedAccount,
           creatorAssociatedAccount: p.creatorAssociatedAccount,
           globalConfig: p.globalConfig,
+          baseMint: p.baseMint,
+          quoteMint: p.quoteMint,
+          quoteTokenProgram: p.quoteTokenProgram,
         };
         return buildBonkBuyInstructions({
           payer: this.payer.publicKey,
+          inputMint: this.getInputMint(params.inputTokenType),
           outputMint: params.mint,
           inputAmount: inputAmt,
+          minimumOutputAmount: params.minimumOutputAmount,
           slippageBasisPoints: slippage,
           fixedOutputAmount:
             params.fixedOutputTokenAmount !== undefined
@@ -1993,8 +2001,10 @@ export class TradingClient {
         };
         return buildRaydiumCpmmBuyInstructions({
           payer: this.payer.publicKey,
+          inputMint: this.getInputMint(params.inputTokenType),
           outputMint: params.mint,
           inputAmount: inputAmt,
+          minimumOutputAmount: params.minimumOutputAmount,
           slippageBasisPoints: slippage,
           fixedOutputAmount:
             params.fixedOutputTokenAmount !== undefined
@@ -2025,13 +2035,17 @@ export class TradingClient {
           serumCoinVaultAccount: p.serumCoinVaultAccount,
           serumPcVaultAccount: p.serumPcVaultAccount,
           serumVaultSigner: p.serumVaultSigner,
+          coinTokenProgram: p.coinTokenProgram,
+          pcTokenProgram: p.pcTokenProgram,
           coinReserve: p.coinReserve,
           pcReserve: p.pcReserve,
         };
         return buildRaydiumAmmV4BuyInstructions({
           payer: this.payer.publicKey,
+          inputMint: this.getInputMint(params.inputTokenType),
           outputMint: params.mint,
           inputAmount: inputAmt,
+          minimumOutputAmount: params.minimumOutputAmount,
           slippageBasisPoints: slippage,
           fixedOutputAmount:
             params.fixedOutputTokenAmount !== undefined
@@ -2045,10 +2059,10 @@ export class TradingClient {
       }
       case DexType.MeteoraDammV2: {
         if (ext.type !== 'MeteoraDammV2') throw new TradeError(5, 'Invalid Meteora params');
-        if (params.fixedOutputTokenAmount === undefined) {
+        if (params.fixedOutputTokenAmount === undefined && params.minimumOutputAmount === undefined) {
           throw new TradeError(
             8,
-            'Meteora DAMM V2 requires fixedOutputTokenAmount (builder parity)'
+            'Meteora DAMM V2 requires minimumOutputAmount or legacy fixedOutputTokenAmount'
           );
         }
         const p = ext.params;
@@ -2057,8 +2071,9 @@ export class TradingClient {
           inputMint: this.getInputMint(params.inputTokenType),
           outputMint: params.mint,
           inputAmount: inputAmt,
+          minimumOutputAmount: params.minimumOutputAmount,
           slippageBasisPoints: slippage,
-          fixedOutputAmount: BigInt(params.fixedOutputTokenAmount),
+          fixedOutputAmount: params.fixedOutputTokenAmount === undefined ? undefined : BigInt(params.fixedOutputTokenAmount),
           createInputMintAta: params.createInputTokenAta ?? true,
           createOutputMintAta: params.createMintAta ?? true,
           closeInputMintAta: params.closeInputTokenAta ?? false,
@@ -2092,6 +2107,7 @@ export class TradingClient {
           payer: this.payer.publicKey,
           inputMint: params.mint,
           inputAmount: inputAmt,
+          minimumOutputAmount: params.minimumOutputAmount,
           slippageBasisPoints: slippage,
           fixedOutputAmount:
             params.fixedOutputTokenAmount !== undefined
@@ -2121,10 +2137,16 @@ export class TradingClient {
           quoteTokenProgram: p.quoteTokenProgram,
           isMayhemMode: p.isMayhemMode,
           isCashbackCoin: p.isCashbackCoin,
+          coinCreator: p.coinCreator,
+          feeBasisPoints: p.feeBasisPoints,
+          cashbackFeeBasisPoints: p.cashbackFeeBasisPoints,
         };
         return buildPumpSwapSellInstructions({
           payer: this.payer.publicKey,
+          outputMint: this.getOutputMint(params.outputTokenType),
+          inputMint: params.mint,
           inputAmount: inputAmt,
+          minimumOutputAmount: params.minimumOutputAmount,
           slippageBasisPoints: slippage,
           protocolParams,
           createOutputMintAta: params.createOutputTokenAta ?? false,
@@ -2152,11 +2174,16 @@ export class TradingClient {
           platformAssociatedAccount: p.platformAssociatedAccount,
           creatorAssociatedAccount: p.creatorAssociatedAccount,
           globalConfig: p.globalConfig,
+          baseMint: p.baseMint,
+          quoteMint: p.quoteMint,
+          quoteTokenProgram: p.quoteTokenProgram,
         };
         return buildBonkSellInstructions({
           payer: this.payer.publicKey,
+          outputMint: this.getOutputMint(params.outputTokenType),
           inputMint: params.mint,
           inputAmount: inputAmt,
+          minimumOutputAmount: params.minimumOutputAmount,
           slippageBasisPoints: slippage,
           fixedOutputAmount:
             params.fixedOutputTokenAmount !== undefined
@@ -2186,8 +2213,10 @@ export class TradingClient {
         };
         return buildRaydiumCpmmSellInstructions({
           payer: this.payer.publicKey,
+          outputMint: this.getOutputMint(params.outputTokenType),
           inputMint: params.mint,
           inputAmount: inputAmt,
+          minimumOutputAmount: params.minimumOutputAmount,
           slippageBasisPoints: slippage,
           fixedOutputAmount:
             params.fixedOutputTokenAmount !== undefined
@@ -2218,6 +2247,8 @@ export class TradingClient {
           serumCoinVaultAccount: p.serumCoinVaultAccount,
           serumPcVaultAccount: p.serumPcVaultAccount,
           serumVaultSigner: p.serumVaultSigner,
+          coinTokenProgram: p.coinTokenProgram,
+          pcTokenProgram: p.pcTokenProgram,
           coinReserve: p.coinReserve,
           pcReserve: p.pcReserve,
         };
@@ -2226,6 +2257,7 @@ export class TradingClient {
           inputMint: params.mint,
           outputMint: this.getOutputMint(params.outputTokenType),
           inputAmount: inputAmt,
+          minimumOutputAmount: params.minimumOutputAmount,
           slippageBasisPoints: slippage,
           fixedOutputAmount:
             params.fixedOutputTokenAmount !== undefined
@@ -2239,10 +2271,10 @@ export class TradingClient {
       }
       case DexType.MeteoraDammV2: {
         if (ext.type !== 'MeteoraDammV2') throw new TradeError(5, 'Invalid Meteora params');
-        if (params.fixedOutputTokenAmount === undefined) {
+        if (params.fixedOutputTokenAmount === undefined && params.minimumOutputAmount === undefined) {
           throw new TradeError(
             8,
-            'Meteora DAMM V2 requires fixedOutputTokenAmount (builder parity)'
+            'Meteora DAMM V2 requires minimumOutputAmount or legacy fixedOutputTokenAmount'
           );
         }
         const p = ext.params;
@@ -2251,7 +2283,8 @@ export class TradingClient {
           inputMint: params.mint,
           outputMint: this.getOutputMint(params.outputTokenType),
           inputAmount: inputAmt,
-          fixedOutputAmount: BigInt(params.fixedOutputTokenAmount),
+          minimumOutputAmount: params.minimumOutputAmount,
+          fixedOutputAmount: params.fixedOutputTokenAmount === undefined ? undefined : BigInt(params.fixedOutputTokenAmount),
           createOutputMintAta: params.createOutputTokenAta ?? false,
           closeOutputMintAta: params.closeOutputTokenAta ?? false,
           closeInputMintAta: params.closeMintTokenAta ?? false,
@@ -2271,7 +2304,8 @@ export class TradingClient {
     }
   }
 
-  private getInputMint(tokenType: TradeTokenType): PublicKey {
+  private getInputMint(tokenType: TradeToken): PublicKey {
+    if (tokenType instanceof PublicKey) return tokenType;
     switch (tokenType) {
       case TradeTokenType.SOL:
         return SDK_CONSTANTS.SOL_TOKEN_ACCOUNT;
@@ -2286,7 +2320,7 @@ export class TradingClient {
     }
   }
 
-  private getOutputMint(tokenType: TradeTokenType): PublicKey {
+  private getOutputMint(tokenType: TradeToken): PublicKey {
     return this.getInputMint(tokenType);
   }
 
