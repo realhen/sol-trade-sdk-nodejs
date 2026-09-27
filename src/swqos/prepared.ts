@@ -211,6 +211,12 @@ export function prepareTransactionVariants(
 ): PreparedTransactionVariant[] {
   validateRoutes(routes);
   const clone = decodePrepared(base.serialize());
+  if (routes.length === 1 && routes[0]!.tipLamports === 0) {
+    validateTransaction(clone);
+    if (!(clone instanceof TransactionV1)) decompile(clone, tables);
+    clone.signatures = clone.signatures.map(() => new Uint8Array(64));
+    return [{ routeId: routes[0]!.id, transaction: clone }];
+  }
   const message = decompile(clone, tables);
   if (routes.length > 1) assertDurableNonce(message);
   // Never carry signatures across preparation, even if the supplied base was signed.
@@ -254,6 +260,12 @@ export function assertSenderVariants(
     variants.some((variant, index) => variant.routeId !== routes[index]!.id)
   ) {
     throw new Error("Variants must match every configured route in order");
+  }
+  if (routes.length === 1 && routes[0]!.tipLamports === 0) {
+    const transaction = variants[0]!.transaction;
+    validateTransaction(transaction);
+    if (!(transaction instanceof TransactionV1)) decompile(transaction, tables);
+    return;
   }
   const expected = prepareTransactionVariants(
     variants[0]!.transaction,

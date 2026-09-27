@@ -707,6 +707,40 @@ describe("caller-signed browser HTTP submission workflow", () => {
 });
 
 describe("v1 browser submission workflow", () => {
+  it("prepares sixteen single-route buys with at most one decode at each preparation boundary", async () => {
+    const endpoint = await localEndpoint("accept", 16);
+    const routes = makeRoutes(endpoint.url).slice(0, 1);
+    const decode = vi.spyOn(TransactionV1, "deserialize");
+    const dispatches = Array.from({ length: 16 }, () => {
+      const wallet = Keypair.generate();
+      const base = compileV1Transaction({
+        payer: wallet.publicKey,
+        recentBlockhash: nonceHash,
+        instructions: [SystemProgram.transfer({
+          fromPubkey: wallet.publicKey, toPubkey: recipient, lamports: 17,
+        })],
+      });
+      const original = Buffer.from(base.serialize());
+      const variants = prepareTransactionVariants(base, [], routes);
+      const packets = variants.map(({ routeId, transaction }) => {
+        transaction.sign([wallet]);
+        return {
+          routeId,
+          signedBase64: Buffer.from(transaction.serialize()).toString("base64"),
+          expectedSignature: bs58.encode(transaction.signatures[0]!),
+        };
+      });
+      expect(Buffer.from(base.serialize())).toEqual(original);
+      return prepareSignedTransactionSubmission(routes, packets, { minContextSlot: 10 });
+    });
+    expect(decode.mock.calls.length).toBeLessThanOrEqual(32);
+    const results = await Promise.all(dispatches.map(dispatch => dispatch()));
+    expect(results.flat().every(result => result.accepted)).toBe(true);
+    expect(endpoint.received).toHaveLength(16);
+    expect(new Set(endpoint.received.map(request =>
+      request.transaction.message.staticAccountKeys[0]!.toBase58(),
+    )).size).toBe(16);
+  });
   it("rejects ambiguous legacy priority fees without an explicit compute limit", () => {
     expect(() =>
       compileV1Transaction({
