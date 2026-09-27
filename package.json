@@ -58,6 +58,15 @@
       "types": "./dist/swqos-settings.d.ts",
       "import": "./dist/swqos-settings.mjs",
       "require": "./dist/swqos-settings.js"
+    },
+    "./router": {
+      "types": "./dist/router/index.d.ts",
+      "import": "./dist/router/index.mjs",
+      "require": "./dist/router/index.js"
+    },
+    "./router/browser": {
+      "types": "./dist/router/browser.d.mts",
+      "import": "./dist/router/browser.mjs"
     }
   },
   "files": [
@@ -65,7 +74,7 @@
     "src"
   ],
   "scripts": {
-    "build": "tsup src/index.ts src/cache/index.ts src/pool/index.ts src/rpc/index.ts src/swqos/index.ts src/trading/index.ts src/perf/index.ts src/venues/index.ts src/swqos-settings.ts --format cjs,esm --dts --clean && npm run build:browser && node scripts/build-venues-browser.mjs",
+    "build": "tsup src/index.ts src/cache/index.ts src/pool/index.ts src/rpc/index.ts src/swqos/index.ts src/trading/index.ts src/perf/index.ts src/venues/index.ts src/swqos-settings.ts src/router/index.ts --format cjs,esm --dts --clean && npm run build:browser && node scripts/build-venues-browser.mjs && node scripts/build-router-browser.mjs && node scripts/build-swqos-settings-browser.mjs",
     "dev": "tsup src/index.ts src/cache/index.ts src/pool/index.ts src/rpc/index.ts src/swqos/index.ts src/trading/index.ts src/perf/index.ts --format cjs,esm --dts --watch",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -82,7 +91,9 @@
     "test:venues:stale": "node scripts/test-stale-quote-surfpool.mjs",
     "test:venues:transfer-fees": "node scripts/test-transfer-fee-surfpool.mjs",
     "test:venues:partial": "node scripts/test-orca-partial-surfpool.mjs",
-    "test:non-sol:surfpool": "node scripts/test-non-sol-pairs-surfpool.mjs"
+    "test:non-sol:surfpool": "node scripts/test-non-sol-pairs-surfpool.mjs",
+    "test:router:package": "node scripts/test-router-package.mjs",
+    "test:router:surfpool": "node scripts/test-router-surfpool.mjs"
   },
   "keywords": [
     "solana",

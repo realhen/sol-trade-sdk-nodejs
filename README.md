@@ -580,3 +580,62 @@ the browser runtime does not require a global `process` or `Buffer`.
 `sol-trade-sdk/swqos-settings` exposes transport-free HTTP provider metadata and tip-address validation for settings pages. `HttpSenderRoute.apiKey` is forwarded to each provider's own HTTP client; keys must stay in trusted caller storage. Prepared submission supports up to 64 routes including the untipped default RPC. Every multi-route submission still requires matching same-nonce transaction variants and caller-owned signatures. Native-only and blacklisted providers are excluded from the settings catalog.
 
 The browser submission workflow tests all 11 supported HTTP providers concurrently against loopback fixtures, including v1 signatures, provider-specific authentication, query preservation and normalized endpoint paths. These fixtures do not establish production provider availability or transaction landing rates. The 0slot HTTPS default follows its [official endpoint documentation](https://0slot.trade/docs.php); providers whose bundled defaults are HTTP-only require callers to supply an HTTPS endpoint in browser settings.
+
+### Jupiter multi-hop routes
+
+`sol-trade-sdk/router` (Node) and `sol-trade-sdk/router/browser` (bundled browser ESM)
+prepare unsigned exact-input routes using Jupiter Swap API v2 `/build`. This supports
+SOL-funded trading through intermediate pairs such as USDC and MET without making
+each venue builder implement conversion. The caller retains signing, transaction
+version, compute budget, durable nonce, sender selection and submission ownership.
+
+```ts
+import { prepareJupiterRoute, assertRouterTradeFresh } from 'sol-trade-sdk/router';
+const route = await prepareJupiterRoute({
+  connection, owner, inputMint, outputMint,
+  amountIn: 10_000_000n,
+  slippageBps: 100,
+  apiKey: process.env.JUPITER_API_KEY,
+  wrapNativeInput: true, // only when inputMint is WSOL; both native flags default false
+});
+assertRouterTradeFresh(route); // repeat immediately before signing
+// Compile route.instructions with route.lookupTables and your transaction policy.
+```
+
+Provider JSON is untrusted: the adapter checks the pinned on-chain route-v2 binary
+layout, owner and endpoint ATAs, raw input/floor, allocation graph, setup instructions,
+shared account PDAs and actual on-chain lookup tables. Quotes expire from preparation
+start (10 seconds by default) and mutation invalidates their identity. Unknown route
+layouts, opaque dynamic/RFQ variants, extra transfers and router referral fees fail
+closed. Provider compute-budget instructions are excluded; the caller supplies its own.
+
+Native SOL input wraps exactly the requested budget and leaves the WSOL ATA open,
+preserving an existing balance. Explicit `unwrapNativeOutput` closes the owner's output
+WSOL ATA to the same owner, including any preexisting WSOL. `normalizeJupiterFill` uses
+Jupiter-scoped WSOL transfers and actual token-account deltas, so previous balances,
+rent and sender tips are not counted as trade proceeds. Fetch its jsonParsed receipt
+at confirmed or finalized commitment and persist the prepared endpoint, amount, floor
+and `swapInstructionData` expectations before broadcast. Incomplete or ambiguous
+receipts are rejected rather than converted into estimated fills.
+
+`prepareJupiterSellForSolValue` sizes a token sale for an expected SOL value within a
+bounded eight-quote search, never exceeding supplied holdings or the expected target.
+Its default target tolerance is 10 bps below the target; execution still varies within
+swap slippage. Some Pump legs permit partial input consumption, exposed as
+`allowsPartialFill`; always account for actual executed amounts.
+
+Axiom FLASH transaction research showed direct DEX calls and intermediate-balance
+forwarding, without a documented public integration API. Jupiter's custom-build API
+provides a supported integration while retaining our transaction controls. This does
+not establish identical pool selection or universal Axiom coverage: route availability,
+liquidity, supported instruction layouts and transaction limits still apply. API keys
+are optional on the tested endpoint, but production wallet groups should use configured
+request limits. No fallback signs an unchecked provider transaction.
+
+Validation commands: `npm test`, `npm run test:router:package` (after `npm run build`)
+and `npm run test:router:surfpool`. The latter only signs generated wallets against a
+verified loopback Surfpool runtime; it fetches unsigned Jupiter builds over HTTPS.
+Use Surfpool 1.6.0 for v1 transaction support. Read its evidence report for individual
+cases: unavailable upstream quotes and malformed local receipt metadata are reported
+separately from successful execution. Optional harness-only receipt metadata correction
+never changes the SDK's strict receipt validator or the extension's accounting behavior.
