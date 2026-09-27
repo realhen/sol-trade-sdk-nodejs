@@ -3,6 +3,7 @@
  */
 
 import { PublicKey, Connection } from '@solana/web3.js';
+import { unpackMint } from '@solana/spl-token';
 import {
   TOKEN_PROGRAM,
   TOKEN_PROGRAM_2022,
@@ -13,6 +14,7 @@ import {
 import {
   getBondingCurvePda,
   getCreatorVaultPda,
+  PUMPFUN_PROGRAM_ID,
 } from '../instruction/pumpfun_builder';
 import {
   findByMint as findPumpSwapPoolByMint,
@@ -25,10 +27,13 @@ import {
   computePumpSwapFeeBasisPoints,
   type PumpSwapPool,
 } from '../instruction/pumpswap';
+import { normalizeNativeMint, validatePoolTokenProgram } from '../instruction/mint-pair';
 import { effectiveQuoteReserves, type PumpSwapFeeBasisPoints } from '../calc';
 import {
   fetchBonkPoolState,
   getBonkPoolPDA,
+  BONK_GLOBAL_CONFIG,
+  BONK_USD1_GLOBAL_CONFIG,
 } from '../instruction/bonk_builder';
 import {
   fetchRaydiumCPMMpoolState,
@@ -76,43 +81,70 @@ export interface BondingCurveAccount {
   creator: PublicKey;
   isMayhemMode: boolean;
   isCashbackCoin: boolean;
+  /** Effective SPL quote mint; legacy native-SOL curves normalize to WSOL. */
+  quoteMint?: PublicKey;
+}
+
+const PUMP_CURVE_DISCRIMINATOR = Buffer.from([23, 183, 248, 55, 96, 216, 172, 96]);
+
+function effectivePumpQuoteMint(mint: PublicKey = PublicKey.default): PublicKey {
+  return mint.equals(PublicKey.default) ? WSOL_TOKEN_ACCOUNT : normalizeNativeMint(mint);
+}
+
+function pumpQuoteMintForLayout(mint: PublicKey): PublicKey {
+  const effective = effectivePumpQuoteMint(mint);
+  return effective.equals(WSOL_TOKEN_ACCOUNT) ? PublicKey.default : effective;
 }
 
 function decodePumpFunBondingCurveData(
   data: Buffer,
   bondingCurveAddr: PublicKey
 ): BondingCurveAccount {
-  let offset = 8;
-  const virtualTokenReserves = data.readBigUInt64LE(offset);
-  offset += 8;
-  const virtualSolReserves = data.readBigUInt64LE(offset);
-  offset += 8;
-  const realTokenReserves = data.readBigUInt64LE(offset);
-  offset += 8;
-  const realSolReserves = data.readBigUInt64LE(offset);
-  offset += 8;
-  const tokenTotalSupply = data.readBigUInt64LE(offset);
-  offset += 8;
-  const complete = data.readUInt8(offset) === 1;
-  offset += 1;
-  const creator = new PublicKey(data.subarray(offset, offset + 32));
-  offset += 32;
-  const isMayhemMode = data.readUInt8(offset) === 1;
-  offset += 1;
-  const isCashbackCoin = data.readUInt8(offset) === 1;
+  // Complete legacy prefixes: original (49), creator (81), mayhem (82), cashback (83).
+  // Current IDL appends quote_mint at 83; account allocation can include later fields/padding.
+  // Source: https://github.com/pump-fun/pump-public-docs/blob/main/idl/pump.json
+  if (data.length < 115 && ![49, 81, 82, 83].includes(data.length)) {
+    throw new Error('Truncated Pump bonding curve account');
+  }
+  if (!data.subarray(0, 8).equals(PUMP_CURVE_DISCRIMINATOR)) {
+    throw new Error('Invalid Pump bonding curve discriminator');
+  }
+  const boolAt = (offset: number): boolean => {
+    const value = data[offset];
+    if (value !== 0 && value !== 1) throw new Error('Invalid Pump bonding curve boolean');
+    return value === 1;
+  };
   return {
     discriminator: 0,
     account: bondingCurveAddr,
-    virtualTokenReserves,
-    virtualSolReserves,
-    realTokenReserves,
-    realSolReserves,
-    tokenTotalSupply,
-    complete,
-    creator,
-    isMayhemMode,
-    isCashbackCoin,
+    virtualTokenReserves: data.readBigUInt64LE(8),
+    virtualSolReserves: data.readBigUInt64LE(16),
+    realTokenReserves: data.readBigUInt64LE(24),
+    realSolReserves: data.readBigUInt64LE(32),
+    tokenTotalSupply: data.readBigUInt64LE(40),
+    complete: boolAt(48),
+    creator: data.length >= 81 ? new PublicKey(data.subarray(49, 81)) : PublicKey.default,
+    isMayhemMode: data.length >= 82 ? boolAt(81) : false,
+    isCashbackCoin: data.length >= 83 ? boolAt(82) : false,
+    quoteMint: effectivePumpQuoteMint(data.length >= 115 ? new PublicKey(data.subarray(83, 115)) : undefined),
   };
+}
+
+function validatePumpMintAccount(
+  mint: PublicKey,
+  account: Awaited<ReturnType<Connection['getAccountInfo']>>,
+  quote = false,
+): PublicKey {
+  if (!account || account.executable) throw new Error('Pump mint account not found or invalid');
+  validatePoolTokenProgram(mint, account.owner);
+  if (quote && !account.owner.equals(TOKEN_PROGRAM)) {
+    throw new Error('Pump quote mint requires the classic token program; Token-2022 quotes are unsupported');
+  }
+  // Validate mint account structure, not merely the program owner. Token-2022
+  // extension support still requires separate caller qualification before trading.
+  const decoded = unpackMint(mint, account, account.owner);
+  if (!decoded.isInitialized) throw new Error('Pump mint account is not initialized');
+  return account.owner;
 }
 
 export class PumpFunParams {
@@ -121,8 +153,12 @@ export class PumpFunParams {
     public associatedBondingCurve: PublicKey,
     public creatorVault: PublicKey,
     public tokenProgram: PublicKey,
-    public closeTokenAccountWhenSell?: boolean
-  ) {}
+    public closeTokenAccountWhenSell?: boolean,
+    /** Non-native quotes select V2; native aliases preserve the legacy layout. */
+    public quoteMint: PublicKey = bondingCurve.quoteMint ?? PublicKey.default
+  ) {
+    this.quoteMint = pumpQuoteMintForLayout(quoteMint);
+  }
 
   static immediateSell(
     creatorVault: PublicKey,
@@ -164,6 +200,7 @@ export class PumpFunParams {
     feeRecipient: PublicKey;
     tokenProgram: PublicKey;
     isCashbackCoin: boolean;
+    quoteMint?: PublicKey;
   }): PumpFunParams {
     const isMayhemMode = false;
     return new PumpFunParams(
@@ -179,11 +216,13 @@ export class PumpFunParams {
         creator: params.creator,
         isMayhemMode,
         isCashbackCoin: params.isCashbackCoin,
+        quoteMint: effectivePumpQuoteMint(params.quoteMint),
       },
       params.associatedBondingCurve,
       params.creatorVault,
       params.tokenProgram,
-      params.closeTokenAccountWhenSell
+      params.closeTokenAccountWhenSell,
+      params.quoteMint
     );
   }
 
@@ -196,12 +235,20 @@ export class PumpFunParams {
     if (!accountInfo?.data?.length) {
       throw new Error('Bonding curve account not found');
     }
+    if (!accountInfo.owner.equals(PUMPFUN_PROGRAM_ID) || accountInfo.executable) {
+      throw new Error('Invalid Pump bonding curve owner');
+    }
     const bondingCurve = decodePumpFunBondingCurveData(
       accountInfo.data,
       bondingCurveAddr
     );
     const mintAccount = await connection.getAccountInfo(mint);
-    const tokenProgram = mintAccount?.owner ?? TOKEN_PROGRAM;
+    const tokenProgram = validatePumpMintAccount(mint, mintAccount);
+    const quoteMint = effectivePumpQuoteMint(bondingCurve.quoteMint);
+    if (quoteMint.equals(mint)) throw new Error('Pump base and quote mints must be distinct');
+    if (!quoteMint.equals(WSOL_TOKEN_ACCOUNT)) {
+      validatePumpMintAccount(quoteMint, await connection.getAccountInfo(quoteMint), true);
+    }
     const associatedBondingCurve = getPumpSwapAta(
       bondingCurveAddr,
       mint,
@@ -212,7 +259,9 @@ export class PumpFunParams {
       bondingCurve,
       associatedBondingCurve,
       creatorVault,
-      tokenProgram
+      tokenProgram,
+      undefined,
+      quoteMint
     );
   }
 
@@ -363,17 +412,17 @@ export class PumpSwapParams {
 
 // ============== Bonk Params ==============
 
-function bonkPlatformAssociatedAccount(platformConfig: PublicKey): PublicKey {
+function bonkPlatformAssociatedAccount(platformConfig: PublicKey, quoteMint: PublicKey): PublicKey {
   const [pda] = PublicKey.findProgramAddressSync(
-    [platformConfig.toBuffer(), WSOL_TOKEN_ACCOUNT.toBuffer()],
+    [platformConfig.toBuffer(), quoteMint.toBuffer()],
     BONK_PROGRAM
   );
   return pda;
 }
 
-function bonkCreatorAssociatedAccount(creator: PublicKey): PublicKey {
+function bonkCreatorAssociatedAccount(creator: PublicKey, quoteMint: PublicKey): PublicKey {
   const [pda] = PublicKey.findProgramAddressSync(
-    [creator.toBuffer(), WSOL_TOKEN_ACCOUNT.toBuffer()],
+    [creator.toBuffer(), quoteMint.toBuffer()],
     BONK_PROGRAM
   );
   return pda;
@@ -392,22 +441,49 @@ export class BonkParams {
     public platformConfig: PublicKey,
     public platformAssociatedAccount: PublicKey,
     public creatorAssociatedAccount: PublicKey,
-    public globalConfig: PublicKey
+    public globalConfig: PublicKey,
+    public baseMint?: PublicKey,
+    public quoteMint?: PublicKey,
+    public quoteTokenProgram?: PublicKey
   ) {}
 
   static async fromMintByRpc(
     connection: Connection,
     mint: PublicKey,
-    usd1Pool: boolean = false
+    quote: boolean | PublicKey = false
   ): Promise<BonkParams> {
-    const quoteMint = usd1Pool ? USD1_TOKEN_ACCOUNT : WSOL_TOKEN_ACCOUNT;
+    const quoteMint = typeof quote === 'boolean'
+      ? (quote ? USD1_TOKEN_ACCOUNT : WSOL_TOKEN_ACCOUNT)
+      : normalizeNativeMint(quote);
     const poolAddress = getBonkPoolPDA(mint, quoteMint);
-    const poolData = await fetchBonkPoolState(wrapConnection(connection), poolAddress);
-    if (!poolData) {
-      throw new Error('Bonk pool state not found');
+    const params = await BonkParams.fromPoolByRpc(connection, poolAddress);
+    if (!params.baseMint?.equals(mint) || !params.quoteMint?.equals(quoteMint)) {
+      throw new Error('Bonk pool does not match the requested mint pair');
     }
-    const tokenAccount = await connection.getAccountInfo(poolData.baseMint);
-    const mintTokenProgram = tokenAccount?.owner ?? TOKEN_PROGRAM;
+    return params;
+  }
+
+  /** Load the exact selected pool, including its quote mint and token program. */
+  static async fromPoolByRpc(connection: Connection, poolAddress: PublicKey): Promise<BonkParams> {
+    const poolAccount = await connection.getAccountInfo(poolAddress);
+    if (!poolAccount?.owner.equals(BONK_PROGRAM)) throw new Error('Invalid Bonk pool owner');
+    const poolData = await fetchBonkPoolState({ getAccountInfo: async () => ({ value: { data: Buffer.from(poolAccount.data) } }) }, poolAddress);
+    if (!poolData || poolData.baseMint.equals(poolData.quoteMint) ||
+        !getBonkPoolPDA(poolData.baseMint, poolData.quoteMint).equals(poolAddress)) {
+      throw new Error('Invalid Bonk pool mint pair or address');
+    }
+    if (poolData.globalConfig.equals(PublicKey.default) ||
+        (poolData.globalConfig.equals(BONK_GLOBAL_CONFIG) && !poolData.quoteMint.equals(WSOL_TOKEN_ACCOUNT)) ||
+        (poolData.globalConfig.equals(BONK_USD1_GLOBAL_CONFIG) && !poolData.quoteMint.equals(USD1_TOKEN_ACCOUNT))) {
+      throw new Error('Invalid Bonk global config for pool quote mint');
+    }
+    const [baseAccount, quoteAccount] = await Promise.all([
+      connection.getAccountInfo(poolData.baseMint), connection.getAccountInfo(poolData.quoteMint),
+    ]);
+    if (!baseAccount || !quoteAccount) throw new Error('Bonk pool mint account missing');
+    const mintTokenProgram = baseAccount.owner;
+    validatePoolTokenProgram(poolData.baseMint, mintTokenProgram);
+    validatePoolTokenProgram(poolData.quoteMint, quoteAccount.owner);
     return new BonkParams(
       poolData.virtualBase,
       poolData.virtualQuote,
@@ -418,9 +494,12 @@ export class BonkParams {
       poolData.quoteVault,
       mintTokenProgram,
       poolData.platformConfig,
-      bonkPlatformAssociatedAccount(poolData.platformConfig),
-      bonkCreatorAssociatedAccount(poolData.creator),
-      poolData.globalConfig
+      bonkPlatformAssociatedAccount(poolData.platformConfig, poolData.quoteMint),
+      bonkCreatorAssociatedAccount(poolData.creator, poolData.quoteMint),
+      poolData.globalConfig,
+      poolData.baseMint,
+      poolData.quoteMint,
+      quoteAccount.owner
     );
   }
 }
@@ -558,14 +637,21 @@ export class MeteoraDammV2Params {
     if (!poolData) {
       throw new Error('Meteora DAMM V2 pool not found');
     }
+    const [mintA, mintB] = await Promise.all([
+      connection.getAccountInfo(poolData.tokenAMint),
+      connection.getAccountInfo(poolData.tokenBMint),
+    ]);
+    if (!mintA || !mintB) throw new Error('Meteora DAMM V2 mint account missing');
+    validatePoolTokenProgram(poolData.tokenAMint, mintA.owner);
+    validatePoolTokenProgram(poolData.tokenBMint, mintB.owner);
     return new MeteoraDammV2Params(
       poolAddress,
       poolData.tokenAVault,
       poolData.tokenBVault,
       poolData.tokenAMint,
       poolData.tokenBMint,
-      TOKEN_PROGRAM,
-      TOKEN_PROGRAM
+      mintA.owner,
+      mintB.owner
     );
   }
 }

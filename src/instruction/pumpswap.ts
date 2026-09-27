@@ -1,4 +1,5 @@
 import { Buffer } from 'buffer';
+import { resolveMintPair, validateSwapAmounts, validatePoolTokenProgram, assertU64Amount } from './mint-pair';
 /**
  * PumpSwap instruction builder - Production-grade implementation
  * 100% port from Rust sol-trade-sdk
@@ -252,7 +253,7 @@ export function handleWsol(owner: PublicKey, amount: bigint): TransactionInstruc
     SystemProgram.transfer({
       fromPubkey: owner,
       toPubkey: wsolAta,
-      lamports: Number(amount),
+      lamports: amount,
     })
   );
 
@@ -371,6 +372,9 @@ export interface PumpSwapParams {
 }
 
 export interface BuildBuyParams {
+  /** Requested SPL pair; one mint is sufficient to infer the other pool side. */
+  inputMint?: PublicKey;
+  outputMint?: PublicKey;
   payer: PublicKey;
   inputAmount: bigint;
   slippageBasisPoints: bigint;
@@ -391,6 +395,9 @@ export interface BuildBuyParams {
 }
 
 export interface BuildSellParams {
+  /** Requested SPL pair; one mint is sufficient to infer the other pool side. */
+  inputMint?: PublicKey;
+  outputMint?: PublicKey;
   payer: PublicKey;
   inputAmount: bigint;
   slippageBasisPoints: bigint;
@@ -408,16 +415,6 @@ export interface BuildSellParams {
 }
 
 // ===== Instruction Builders =====
-
-function validateMinimumOutput(params: { minimumOutputAmount?: bigint; fixedOutputAmount?: bigint }): void {
-  if (params.minimumOutputAmount === undefined) return;
-  if (params.minimumOutputAmount < 0n || params.minimumOutputAmount > 18446744073709551615n) {
-    throw new Error('minimumOutputAmount must fit an unsigned 64-bit amount');
-  }
-  if (params.fixedOutputAmount !== undefined) {
-    throw new Error('minimumOutputAmount cannot be combined with fixedOutputAmount');
-  }
-}
 
 function getEffectiveFeeBasisPoints(protocolParams: PumpSwapParams): PumpSwapFeeBasisPoints {
   const hasCoinCreator = protocolParams.coinCreator === undefined
@@ -442,12 +439,41 @@ function getEffectiveFeeBasisPoints(protocolParams: PumpSwapParams): PumpSwapFee
   );
 }
 
-/**
- * Build buy instructions for PumpSwap
- * 100% port from Rust: src/instruction/pumpswap.rs build_buy_instructions
- */
+/** Resolve a legacy UX side only when exactly one pool side is WSOL/USDC. */
+function resolvePumpSwapPair(params: BuildBuyParams | BuildSellParams, side: 'buy' | 'sell') {
+  const { baseMint, quoteMint } = params.protocolParams;
+  if (params.inputMint !== undefined || params.outputMint !== undefined) {
+    return resolveMintPair(baseMint, quoteMint, params.inputMint, params.outputMint);
+  }
+  const isStable = (mint: PublicKey) => mint.equals(WSOL_TOKEN_ACCOUNT) || mint.equals(USDC_TOKEN_ACCOUNT);
+  const baseStable = isStable(baseMint), quoteStable = isStable(quoteMint);
+  if (baseStable === quoteStable) throw new Error('Ambiguous PumpSwap pair: specify inputMint or outputMint');
+  const stable = baseStable ? baseMint : quoteMint;
+  const other = baseStable ? quoteMint : baseMint;
+  return resolveMintPair(baseMint, quoteMint, side === 'buy' ? stable : other);
+}
+
+/** Build the requested direct pair; this performs no conversion or route discovery. */
 export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruction[] {
-  validateMinimumOutput(params);
+  return buildSwapInstructions(params, 'buy');
+}
+
+/** Build the requested direct pair; the pool orientation determines the on-chain instruction. */
+export function buildSellInstructions(params: BuildSellParams): TransactionInstruction[] {
+  return buildSwapInstructions({ ...params, createOutputMintAta: params.createOutputMintAta ?? false }, 'sell');
+}
+
+// Token program selection does not validate arbitrary Token-2022 extensions. Callers must
+// qualify extension support and supply a net-output floor for extension-aware quotes.
+function buildSwapInstructions(
+  params: BuildBuyParams & { closeOutputMintAta?: boolean },
+  side: 'buy' | 'sell',
+): TransactionInstruction[] {
+  if (params.minimumOutputAmount !== undefined && (
+    typeof params.minimumOutputAmount !== 'bigint' || params.minimumOutputAmount < 0n || params.minimumOutputAmount > (1n << 64n) - 1n
+  )) throw new Error('minimumOutputAmount must fit an unsigned 64-bit amount');
+  validateSwapAmounts(params);
+  const pair = resolvePumpSwapPair(params, side);
   const {
     payer,
     inputAmount,
@@ -484,19 +510,13 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
     effectiveQuoteReserves(poolQuoteTokenReserves, virtualQuoteReserves);
   }
 
-  // Check if pool contains WSOL or USDC
-  const isWsol = quoteMint.equals(WSOL_TOKEN_ACCOUNT) || baseMint.equals(WSOL_TOKEN_ACCOUNT);
-  const isUsdc = quoteMint.equals(USDC_TOKEN_ACCOUNT) || baseMint.equals(USDC_TOKEN_ACCOUNT);
-  
-  if (!isWsol && !isUsdc) {
-    throw new Error('Pool must contain WSOL or USDC');
-  }
-
-  const quoteIsWsolOrUsdc = quoteMint.equals(WSOL_TOKEN_ACCOUNT) || quoteMint.equals(USDC_TOKEN_ACCOUNT);
-  const inputStableMint = quoteIsWsolOrUsdc ? quoteMint : baseMint;
-  const inputStableTokenProgram = quoteIsWsolOrUsdc ? quoteTokenProgram : baseTokenProgram;
-  const outputTradeMint = quoteIsWsolOrUsdc ? baseMint : quoteMint;
-  const outputTradeTokenProgram = quoteIsWsolOrUsdc ? baseTokenProgram : quoteTokenProgram;
+  validatePoolTokenProgram(baseMint, baseTokenProgram);
+  validatePoolTokenProgram(quoteMint, quoteTokenProgram);
+  const quoteInput = !pair.aToB;
+  const inputMint = pair.inputMint;
+  const inputTokenProgram = quoteInput ? quoteTokenProgram : baseTokenProgram;
+  const outputMint = pair.outputMint;
+  const outputTokenProgram = quoteInput ? baseTokenProgram : quoteTokenProgram;
 
   const feeBasisPoints = params.minimumOutputAmount === undefined
     ? getEffectiveFeeBasisPoints(protocolParams)
@@ -507,13 +527,13 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
   let solAmount: bigint;
 
   if (params.minimumOutputAmount !== undefined) {
-    if (!useExactQuoteAmount || !quoteIsWsolOrUsdc) {
+    if (quoteInput && !useExactQuoteAmount) {
       throw new Error('minimumOutputAmount requires exact quote-input buy');
     }
     tokenAmount = params.minimumOutputAmount;
     solAmount = inputAmount;
-  } else if (quoteIsWsolOrUsdc) {
-    // Buying base with quote (WSOL/USDC)
+  } else if (quoteInput) {
+    // Buying base with the actual pool quote mint.
     const result = buyQuoteInputInternalWithFees(
       inputAmount,
       slippageBasisPoints,
@@ -542,6 +562,9 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
     tokenAmount = fixedOutputAmount;
   }
 
+  assertU64Amount(tokenAmount, 'outputAmount');
+  assertU64Amount(solAmount, 'inputOrMaximumQuoteAmount');
+
   // Get user token accounts
   const userBaseTokenAccount = getAssociatedTokenAddress(payer, baseMint, baseTokenProgram);
   const userQuoteTokenAccount = getAssociatedTokenAddress(payer, quoteMint, quoteTokenProgram);
@@ -559,14 +582,14 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
     // Determine wrap amount based on instruction type:
     // - buy_exact_quote_in: program spends exactly input_amount, wrap input_amount
     // - buy: program may spend up to max_quote, wrap max_quote
-    const wrapAmount = useExactQuoteAmount ? inputAmount : solAmount;
-    instructions.push(...handleWsolForMint(payer, inputStableMint, inputStableTokenProgram, wrapAmount));
+    const wrapAmount = quoteInput && (!useExactQuoteAmount || fixedOutputAmount !== undefined) ? solAmount : inputAmount;
+    instructions.push(...handleWsolForMint(payer, inputMint, inputTokenProgram, wrapAmount));
   }
 
   // Create output token ATA if needed
   if (createOutputMintAta) {
     instructions.push(
-      createAssociatedTokenAccountIdempotent(payer, payer, outputTradeMint, outputTradeTokenProgram)
+      createAssociatedTokenAccountIdempotent(payer, payer, outputMint, outputTokenProgram)
     );
   }
 
@@ -593,8 +616,8 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
     { pubkey: coinCreatorVaultAuthority, isSigner: false, isWritable: false },
   ];
 
-  // Add volume accumulator accounts for quote (WSOL/USDC) buy
-  if (quoteIsWsolOrUsdc) {
+  // Quote-input buy requires the volume accumulator accounts for every quote mint.
+  if (quoteInput) {
     accounts.push(
       { pubkey: PUMPSWAP_GLOBAL_VOLUME_ACCUMULATOR, isSigner: false, isWritable: false }
     );
@@ -612,6 +635,9 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
   if (isCashbackCoin) {
     const quoteAta = getUserVolumeAccumulatorQuoteAta(payer, quoteMint, quoteTokenProgram);
     accounts.push({ pubkey: quoteAta, isSigner: false, isWritable: true });
+    if (!quoteInput) {
+      accounts.push({ pubkey: getUserVolumeAccumulatorPDA(payer), isSigner: false, isWritable: true });
+    }
   }
 
   if (protocolParams.coinCreator === undefined || !protocolParams.coinCreator.equals(PublicKey.default)) {
@@ -630,13 +656,13 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
   const trackVolume = (params.trackVolume ?? isCashbackCoin) ? 1 : 0;
   let data: Buffer;
 
-  if (fixedOutputAmount !== undefined) {
+  if (fixedOutputAmount !== undefined && quoteInput) {
     data = Buffer.alloc(25);
     PUMPSWAP_BUY_DISCRIMINATOR.copy(data, 0);
     data.writeBigUInt64LE(tokenAmount, 8);
     data.writeBigUInt64LE(solAmount, 16);
     data[24] = trackVolume;
-  } else if (quoteIsWsolOrUsdc && useExactQuoteAmount) {
+  } else if (quoteInput && useExactQuoteAmount) {
     // buy_exact_quote_in(spendable_quote_in, min_base_amount_out, track_volume)
     const minBaseAmountOut = params.minimumOutputAmount ?? calculateWithSlippageSell(tokenAmount, slippageBasisPoints);
     data = Buffer.alloc(25);
@@ -644,7 +670,7 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
     data.writeBigUInt64LE(inputAmount, 8);
     data.writeBigUInt64LE(minBaseAmountOut, 16);
     data[24] = trackVolume;
-  } else if (quoteIsWsolOrUsdc) {
+  } else if (quoteInput) {
     // buy(token_amount, max_quote, track_volume)
     data = Buffer.alloc(25);
     PUMPSWAP_BUY_DISCRIMINATOR.copy(data, 0);
@@ -668,232 +694,25 @@ export function buildBuyInstructions(params: BuildBuyParams): TransactionInstruc
 
   // Close WSOL ATA if requested
   if (closeInputMintAta) {
-    const closeInstruction = closeWsolForMint(payer, inputStableMint, inputStableTokenProgram);
+    const closeInstruction = side === 'sell'
+      ? new TransactionInstruction({
+          keys: [
+            { pubkey: getAssociatedTokenAddress(payer, inputMint, inputTokenProgram), isSigner: false, isWritable: true },
+            { pubkey: payer, isSigner: false, isWritable: true },
+            { pubkey: payer, isSigner: true, isWritable: false },
+          ],
+          programId: inputTokenProgram,
+          data: Buffer.from([9]),
+        })
+      : closeWsolForMint(payer, inputMint, inputTokenProgram);
     if (closeInstruction) {
       instructions.push(closeInstruction);
     }
   }
 
-  return instructions;
-}
-
-/**
- * Build sell instructions for PumpSwap
- * 100% port from Rust: src/instruction/pumpswap.rs build_sell_instructions
- */
-export function buildSellInstructions(params: BuildSellParams): TransactionInstruction[] {
-  validateMinimumOutput(params);
-  const {
-    payer,
-    inputAmount,
-    slippageBasisPoints,
-    protocolParams,
-    createOutputMintAta = false,
-    closeOutputMintAta = false,
-    closeInputMintAta = false,
-    fixedOutputAmount,
-  } = params;
-
-  if (inputAmount === 0n) {
-    throw new Error('Amount cannot be zero');
-  }
-
-  const {
-    pool,
-    baseMint,
-    quoteMint,
-    poolBaseTokenAccount,
-    poolQuoteTokenAccount,
-    poolBaseTokenReserves,
-    poolQuoteTokenReserves,
-    virtualQuoteReserves,
-    coinCreatorVaultAta,
-    coinCreatorVaultAuthority,
-    baseTokenProgram,
-    quoteTokenProgram,
-    isMayhemMode,
-    isCashbackCoin,
-  } = protocolParams;
-  if (params.minimumOutputAmount === undefined) {
-    effectiveQuoteReserves(poolQuoteTokenReserves, virtualQuoteReserves);
-  }
-
-  // Check if pool contains WSOL or USDC
-  const isWsol = quoteMint.equals(WSOL_TOKEN_ACCOUNT) || baseMint.equals(WSOL_TOKEN_ACCOUNT);
-  const isUsdc = quoteMint.equals(USDC_TOKEN_ACCOUNT) || baseMint.equals(USDC_TOKEN_ACCOUNT);
-  
-  if (!isWsol && !isUsdc) {
-    throw new Error('Pool must contain WSOL or USDC');
-  }
-
-  const quoteIsWsolOrUsdc = quoteMint.equals(WSOL_TOKEN_ACCOUNT) || quoteMint.equals(USDC_TOKEN_ACCOUNT);
-  const outputStableMint = quoteIsWsolOrUsdc ? quoteMint : baseMint;
-  const outputStableTokenProgram = quoteIsWsolOrUsdc ? quoteTokenProgram : baseTokenProgram;
-
-  const feeBasisPoints = params.minimumOutputAmount === undefined
-    ? getEffectiveFeeBasisPoints(protocolParams)
-    : legacyPumpSwapFeeBasisPoints(false);
-
-  // Calculate trade amounts
-  let tokenAmount: bigint;
-  let solAmount: bigint;
-
-  if (params.minimumOutputAmount !== undefined) {
-    if (!quoteIsWsolOrUsdc) {
-      throw new Error('minimumOutputAmount requires exact base-input sell');
-    }
-    tokenAmount = inputAmount;
-    solAmount = params.minimumOutputAmount;
-  } else if (quoteIsWsolOrUsdc) {
-    // Selling base for quote (WSOL/USDC)
-    tokenAmount = inputAmount;
-    const result = sellBaseInputInternalWithFees(
-      inputAmount,
-      slippageBasisPoints,
-      poolBaseTokenReserves,
-      poolQuoteTokenReserves,
-      virtualQuoteReserves,
-      feeBasisPoints
-    );
-    solAmount = result.minQuote;
-  } else {
-    const result = buyQuoteInputInternalWithFees(
-      inputAmount,
-      slippageBasisPoints,
-      poolBaseTokenReserves,
-      poolQuoteTokenReserves,
-      virtualQuoteReserves,
-      feeBasisPoints
-    );
-    tokenAmount = result.maxQuote;
-    solAmount = result.base;
-  }
-
-  // Override sol amount if fixed output is specified
-  if (fixedOutputAmount !== undefined) {
-    solAmount = fixedOutputAmount;
-  }
-
-  // Get user token accounts
-  const userBaseTokenAccount = getAssociatedTokenAddress(payer, baseMint, baseTokenProgram);
-  const userQuoteTokenAccount = getAssociatedTokenAddress(payer, quoteMint, quoteTokenProgram);
-
-  // Determine fee recipient
-  const feeRecipient = protocolParams.feeRecipient ??
-    (isMayhemMode ? getMayhemFeeRecipientRandom() : getPumpSwapProtocolFeeRecipientRandom());
-  const feeRecipientAta = getFeeRecipientAta(feeRecipient, quoteMint, quoteTokenProgram);
-
-  // Build instructions
-  const instructions: TransactionInstruction[] = [];
-
-  // Create WSOL/USDC ATA if needed for receiving
-  if (createOutputMintAta) {
-    instructions.push(
-      createAssociatedTokenAccountIdempotent(payer, payer, outputStableMint, outputStableTokenProgram)
-    );
-  }
-
-  // Build accounts array
-  const accounts = [
-    { pubkey: pool, isSigner: false, isWritable: true },
-    { pubkey: payer, isSigner: true, isWritable: true },
-    { pubkey: PUMPSWAP_GLOBAL_ACCOUNT, isSigner: false, isWritable: false },
-    { pubkey: baseMint, isSigner: false, isWritable: false },
-    { pubkey: quoteMint, isSigner: false, isWritable: false },
-    { pubkey: userBaseTokenAccount, isSigner: false, isWritable: true },
-    { pubkey: userQuoteTokenAccount, isSigner: false, isWritable: true },
-    { pubkey: poolBaseTokenAccount, isSigner: false, isWritable: true },
-    { pubkey: poolQuoteTokenAccount, isSigner: false, isWritable: true },
-    { pubkey: feeRecipient, isSigner: false, isWritable: false },
-    { pubkey: feeRecipientAta, isSigner: false, isWritable: true },
-    { pubkey: baseTokenProgram, isSigner: false, isWritable: false },
-    { pubkey: quoteTokenProgram, isSigner: false, isWritable: false },
-    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-    { pubkey: ASSOCIATED_TOKEN_PROGRAM, isSigner: false, isWritable: false },
-    { pubkey: PUMPSWAP_EVENT_AUTHORITY, isSigner: false, isWritable: false },
-    { pubkey: PUMPSWAP_PROGRAM, isSigner: false, isWritable: false },
-    { pubkey: coinCreatorVaultAta, isSigner: false, isWritable: true },
-    { pubkey: coinCreatorVaultAuthority, isSigner: false, isWritable: false },
-  ];
-
-  // Add volume accumulator accounts for non-quote sell
-  if (!quoteIsWsolOrUsdc) {
-    accounts.push(
-      { pubkey: PUMPSWAP_GLOBAL_VOLUME_ACCUMULATOR, isSigner: false, isWritable: false }
-    );
-    const userVolumeAccumulator = getUserVolumeAccumulatorPDA(payer);
-    accounts.push({ pubkey: userVolumeAccumulator, isSigner: false, isWritable: true });
-  }
-
-  // Add fee config and program
-  accounts.push(
-    { pubkey: PUMPSWAP_FEE_CONFIG, isSigner: false, isWritable: false },
-    { pubkey: PUMPSWAP_FEE_PROGRAM, isSigner: false, isWritable: false }
-  );
-
-  // Add cashback accounts if needed (sell uses quote ATA)
-  if (isCashbackCoin) {
-    const quoteAta = getUserVolumeAccumulatorQuoteAta(payer, quoteMint, quoteTokenProgram);
-    const userVolumeAccumulator = getUserVolumeAccumulatorPDA(payer);
-    accounts.push(
-      { pubkey: quoteAta, isSigner: false, isWritable: true },
-      { pubkey: userVolumeAccumulator, isSigner: false, isWritable: true }
-    );
-  }
-
-  if (protocolParams.coinCreator === undefined || !protocolParams.coinCreator.equals(PublicKey.default)) {
-    const poolV2 = getPoolV2PDA(baseMint);
-    accounts.push({ pubkey: poolV2, isSigner: false, isWritable: false });
-  }
-  const protocolExtraFee = protocolParams.buybackFeeRecipient ?? getPumpSwapProtocolExtraFeeRecipientRandom();
-  accounts.push({ pubkey: protocolExtraFee, isSigner: false, isWritable: false });
-  accounts.push({
-    pubkey: getFeeRecipientAta(protocolExtraFee, quoteMint, quoteTokenProgram),
-    isSigner: false,
-    isWritable: true,
-  });
-
-  // Build instruction data
-  const data = Buffer.alloc(24);
-  if (quoteIsWsolOrUsdc) {
-    PUMPSWAP_SELL_DISCRIMINATOR.copy(data, 0);
-    data.writeBigUInt64LE(tokenAmount, 8);
-    data.writeBigUInt64LE(solAmount, 16);
-  } else {
-    PUMPSWAP_BUY_DISCRIMINATOR.copy(data, 0);
-    data.writeBigUInt64LE(solAmount, 8);
-    data.writeBigUInt64LE(tokenAmount, 16);
-  }
-
-  instructions.push(
-    new TransactionInstruction({
-      keys: accounts,
-      programId: PUMPSWAP_PROGRAM,
-      data,
-    })
-  );
-
-  // Close WSOL ATA if requested
-  if (closeOutputMintAta) {
-    const closeIx = closeWsolForMint(payer, outputStableMint, outputStableTokenProgram);
-    if (closeIx) {
-      instructions.push(closeIx);
-    }
-  }
-
-  // Close base token account if requested
-  if (closeInputMintAta) {
-    const inputTokenAccount = quoteIsWsolOrUsdc ? userBaseTokenAccount : userQuoteTokenAccount;
-    const closeIx = new TransactionInstruction({
-      keys: [
-        { pubkey: inputTokenAccount, isSigner: false, isWritable: true },
-        { pubkey: payer, isSigner: false, isWritable: true },
-        { pubkey: payer, isSigner: true, isWritable: false },
-      ],
-      programId: quoteIsWsolOrUsdc ? baseTokenProgram : quoteTokenProgram,
-      data: Buffer.from([9]),
-    });
-    instructions.push(closeIx);
+  if (params.closeOutputMintAta) {
+    const closeInstruction = closeWsolForMint(payer, outputMint, outputTokenProgram);
+    if (closeInstruction) instructions.push(closeInstruction);
   }
 
   return instructions;

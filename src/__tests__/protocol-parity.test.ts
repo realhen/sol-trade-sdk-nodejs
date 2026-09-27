@@ -330,10 +330,10 @@ describe('protocol instruction parity', () => {
     });
     const ix = ixs.at(-1)!;
 
-    expect(ix.keys).toHaveLength(13);
+    expect(ix.keys).toHaveLength(14);
     expect([...ix.data.subarray(0, 8)]).toEqual([...METEORA_DAMM_V2_SWAP2_DISCRIMINATOR]);
     expect(ix.data[24]).toBe(METEORA_DAMM_V2_SWAP_MODE_PARTIAL_FILL);
-    expect(ix.keys[12]!.pubkey.toBase58()).toBe(METEORA_DAMM_V2_PROGRAM_ID.toBase58());
+    expect(ix.keys[13]!.pubkey.toBase58()).toBe(METEORA_DAMM_V2_PROGRAM_ID.toBase58());
   });
 
   it('normalizes SOL input aliases to WSOL for Meteora DAMM V2', () => {
@@ -449,7 +449,7 @@ describe('protocol instruction parity', () => {
     expect(ix.data.readUInt8(24)).toBe(0);
   });
 
-  it('uses PumpSwap buy two-arg data for reverse sell path', () => {
+  it('uses PumpSwap exact quote-input buy with volume flag for reverse sell path', () => {
     const payer = pk(99);
     const quoteMint = pk(22);
     const reverseParams = pumpSwapProtocolParams({
@@ -475,8 +475,10 @@ describe('protocol instruction parity', () => {
     expect(closeIx.keys[0]!.pubkey.toBase58()).toBe(userQuoteAta.toBase58());
     expect(closeIx.programId.toBase58()).toBe(CONSTANTS.TOKEN_PROGRAM.toBase58());
 
-    expect([...ix.data.subarray(0, 8)]).toEqual([...PUMPSWAP_BUY_DISCRIMINATOR]);
-    expect(ix.data.length).toBe(24);
+    expect([...ix.data.subarray(0, 8)]).toEqual([...PUMPSWAP_BUY_EXACT_QUOTE_IN_DISCRIMINATOR]);
+    expect(ix.data.length).toBe(25);
+    expect(ix.data.readBigUInt64LE(8)).toBe(1_000_000n);
+    expect(ix.data[24]).toBe(0);
     expect([...PUMPSWAP_SELL_DISCRIMINATOR]).not.toEqual([...ix.data.subarray(0, 8)]);
   });
 
@@ -506,6 +508,7 @@ describe('protocol instruction parity', () => {
 
   it('uses the quote token program for PumpSwap fee vault ATAs', () => {
     const protocolParams = pumpSwapProtocolParams({
+      quoteMint: pk(77),
       quoteTokenProgram: CONSTANTS.TOKEN_PROGRAM_2022,
     });
     const ix = buildPumpSwapBuyInstructions({
@@ -513,6 +516,7 @@ describe('protocol instruction parity', () => {
       inputAmount: 1_000_000n,
       slippageBasisPoints: 300n,
       protocolParams,
+      inputMint: protocolParams.quoteMint,
       createInputMintAta: false,
       createOutputMintAta: false,
       useExactQuoteAmount: true,

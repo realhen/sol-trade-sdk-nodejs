@@ -103,6 +103,9 @@ export interface PumpSwapParams {
 }
 
 export interface BonkParams {
+  baseMint?: PublicKey;
+  quoteMint?: PublicKey;
+  quoteTokenProgram?: PublicKey;
   virtualBase?: bigint;
   virtualQuote?: bigint;
   realBase?: bigint;
@@ -132,6 +135,8 @@ export interface RaydiumCpmmParams {
 }
 
 export interface RaydiumAmmV4Params {
+  coinTokenProgram?: PublicKey;
+  pcTokenProgram?: PublicKey;
   amm?: PublicKey;
   coinMint?: PublicKey;
   pcMint?: PublicKey;

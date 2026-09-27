@@ -158,6 +158,9 @@ export function validateAmount(
   name: string = 'amount',
   allowZero: boolean = false
 ): bigint {
+  if (typeof amount === 'number' && !Number.isSafeInteger(amount)) {
+    throw new ValidationError(`${name} must be a safe integer number or bigint`);
+  }
   const bigAmount = typeof amount === 'bigint' ? amount : BigInt(amount);
 
   if (bigAmount < BigInt(0)) {

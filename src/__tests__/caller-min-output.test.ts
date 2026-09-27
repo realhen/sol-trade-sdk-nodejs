@@ -223,15 +223,15 @@ describe('caller minimum output', () => {
           fixedOutputAmount: 0n,
         })
       ).toThrow(/fixedOutputAmount/);
-      expect(() =>
-        build({
-          payer,
-          inputAmount,
-          slippageBasisPoints: 100n,
-          protocolParams: pool({ baseMint: NATIVE_MINT, quoteMint: mint }),
-          minimumOutputAmount: 1n,
-        })
-      ).toThrow(/exact .*input/);
+      const reverseSwap = build({
+        payer,
+        inputAmount,
+        slippageBasisPoints: 100n,
+        protocolParams: pool({ baseMint: NATIVE_MINT, quoteMint: mint }),
+        minimumOutputAmount: 1n,
+      }).find(ix => ix.programId.equals(pumpswap.PUMPSWAP_PROGRAM))!;
+      expect(reverseSwap.data.readBigUInt64LE(8)).toBe(inputAmount);
+      expect(reverseSwap.data.readBigUInt64LE(16)).toBe(1n);
     }
   });
 });
