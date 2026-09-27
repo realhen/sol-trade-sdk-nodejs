@@ -245,3 +245,55 @@ it("binds the current Pump buyback recipient and rejects a changed quote mint sn
     quoteDirectSwap(wrong, wrong.quoteMint, 1_000_000n, 100),
   ).toThrow("changed during preparation");
 });
+
+for (const f of fixtures)
+  it(`${f.venue}: sizes quote value through atomic dust probes`, async () => {
+    const c = cache(f),
+      m = await prepareDirectMarket(
+        c.connection,
+        new PublicKey(f.pool),
+        new PublicKey(f.mint),
+      );
+    c.warm();
+    const saved = f.quotes.find((q: any) => q.input === f.mint)!;
+    const full = quoteDirectSwap(m, m.mint, BigInt(saved.amount), 100);
+    const target = full.minimumOutput / 2n || 1n;
+    const sized = sizeDirectSellForQuoteValue(
+      m,
+      target,
+      BigInt(saved.amount),
+      100,
+    );
+    expect(sized.minimumOutput).toBeGreaterThanOrEqual(target);
+    expect(sized.inputAmount).toBeLessThanOrEqual(BigInt(saved.amount));
+    await buildDirectSwap(m, sized, Keypair.generate().publicKey);
+  });
+
+it("accepts the official PumpSwap coder 270-byte account prefix", async () => {
+  const { PUMP_AMM_SDK, POOL_SIZE } = await import("@pump-fun/pump-swap-sdk");
+  const f = structuredClone(fixtures.find((f) => f.venue === "PumpSwap")!);
+  const full = f.accounts[f.pool],
+    data = Buffer.from(full.data, "base64");
+  expect(POOL_SIZE).toBe(270);
+  const decoded = PUMP_AMM_SDK.decodePool({
+    ...full,
+    data,
+    owner: new PublicKey(full.owner),
+  });
+  const encoded = await PUMP_AMM_SDK.offlineProgram.coder.accounts.encode(
+    "pool",
+    decoded,
+  );
+  expect(encoded.length).toBe(POOL_SIZE);
+  full.data = encoded.toString("base64");
+  const c = cache(f),
+    m = await prepareDirectMarket(
+      c.connection,
+      new PublicKey(f.pool),
+      new PublicKey(f.mint),
+    );
+  c.warm();
+  const q = quoteDirectSwap(m, m.quoteMint, 1_000_000n, 100);
+  const result = await buildDirectSwap(m, q, Keypair.generate().publicKey);
+  expect(result.expectation.swapInstructions).toHaveLength(2);
+});

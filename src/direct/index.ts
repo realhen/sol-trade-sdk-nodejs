@@ -178,6 +178,15 @@ export async function prepareDirectMarket(
   } else if (venue === "Meteora DLMM") {
     const s = await dlmm.prepare(connection, pool);
     factory = (input, amount, bps) => {
+      const mint = tokens[input.equals(targetMint) ? 0 : 1]!;
+      const fee = getTransferFeeConfig(mint);
+      // The upstream quote reports "Insufficient liquidity" when transfer fees
+      // consume a one-atomic probe before it visits any bin. Classify this exact
+      // dust case before the quote so sizing does not mistake it for a price cap.
+      assert(
+        !fee || amount > calculateEpochFee(fee, s.chainTime.epoch, amount),
+        "Input rounds to zero after transfer fees",
+      );
       const q = dlmm.quote(s, input, amount, bps);
       return {
         expectedOutput: q.amountOut,
@@ -389,7 +398,9 @@ export function sizeDirectSellForQuoteValue(
     } catch (error) {
       if (
         error instanceof Error &&
-        /zero|dust|round|positive u64/i.test(error.message)
+        /zero|dust|round|positive u64|amount out must be greater than 0|fees exceed total output; final quote is negative/i.test(
+          error.message,
+        )
       )
         return 0n;
       if (

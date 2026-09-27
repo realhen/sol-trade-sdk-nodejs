@@ -141,7 +141,7 @@ export async function discoverPoolQuoteMint(
   } else if (info.owner.equals(PUMPSWAP_PROGRAM)) {
     discriminator(data, PUMPSWAP_POOL_DISCRIMINATOR);
     check(
-      [252, 261, 300, 301, 643].includes(data.length),
+      [252, 261, 270, 300, 301, 643].includes(data.length),
       "unsupported PumpSwap account length",
     );
     const state = decodePool(data.subarray(8));
