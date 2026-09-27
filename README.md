@@ -106,6 +106,11 @@ The local execution test verifies the server identifies as Surfpool and requires
 The executable Rust differential compiles attributed upstream builder excerpts from commit `0ba9ec5a652bdb351323252771fec33ea1fb2f80` and compares program IDs, every account/flag and encoded bytes against the built Node adapters. It covers CLMM, Whirlpool and DLMM instruction construction; that upstream revision has no DBC or DAMM v1 builder and these Rust builders do not provide comparable quote engines. CLMM's deliberate zero-limit execution policy is checked separately from Rust's high-level nonzero default.
 
 The pinned official SDK dependency graph retains upstream security advisories (including `bigint-buffer` and Anchor's TOML loader). Compatible dependency patches are recorded in this repository's overrides; npm does not apply dependency-package overrides in a consuming application, so consumers should review/mirror them in their own lockfile. No incompatible `npm audit fix --force` downgrades are applied.
+## Version 1 browser transactions (0.4.0)
+
+Pass `version: 1` to `buildSwapTransaction` or use `compileV1Transaction` for v1 transactions with explicit compute and loaded-account-data limits. `TransactionV1` encodes, signs and validates canonical wire bytes through Solana Kit 8.3.0. It enforces the 4,096-byte envelope, 12-signature, 64-account and 64-instruction limits. V1 expands account addresses rather than using lookup tables. Prepared sender variants preserve the transaction version and resource configuration, changing only the configured tip.
+
+`upgradeTransactionToV1` converts unsigned legacy/v0 transactions using caller-supplied lookup tables. Existing signatures are rejected. Compute-budget instructions become v1 configuration; a positive legacy compute-unit price requires an explicit compute-unit limit to preserve the total priority fee. Existing SDK callers retain the v0 default for compatibility; applications can require v1 at their signing and submission boundaries. Use Surfpool 1.5 or newer for local v1 validation.
 
 ## Browser HTTP support in this fork (0.2.0)
 
@@ -568,3 +573,10 @@ it is not a standalone script for direct inclusion in a page.
 Strict TypeScript consumers need the Node type declarations used by
 `@solana/web3.js` (for example, `@types/node`). These are compile-time types;
 the browser runtime does not require a global `process` or `Buffer`.
+
+
+### Browser provider settings
+
+`sol-trade-sdk/swqos-settings` exposes transport-free HTTP provider metadata and tip-address validation for settings pages. `HttpSenderRoute.apiKey` is forwarded to each provider's own HTTP client; keys must stay in trusted caller storage. Prepared submission supports up to 64 routes including the untipped default RPC. Every multi-route submission still requires matching same-nonce transaction variants and caller-owned signatures. Native-only and blacklisted providers are excluded from the settings catalog.
+
+The browser submission workflow tests all 11 supported HTTP providers concurrently against loopback fixtures, including v1 signatures, provider-specific authentication, query preservation and normalized endpoint paths. These fixtures do not establish production provider availability or transaction landing rates. The 0slot HTTPS default follows its [official endpoint documentation](https://0slot.trade/docs.php); providers whose bundled defaults are HTTP-only require callers to supply an HTTPS endpoint in browser settings.
