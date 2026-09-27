@@ -11,7 +11,7 @@ import {
 } from '@solana/web3.js';
 import { buildTipInstruction, compileTransaction } from '../common/transaction';
 import { SwqosTransport, SwqosType, TradeType } from '../enums';
-import { ClientFactory } from './clients';
+import { ClientFactory, type HttpSendTimingEvent } from './clients';
 
 export interface HttpSenderRoute {
   id: string;
@@ -27,6 +27,13 @@ export interface HttpSenderRoute {
 export interface PreparedTransactionVariant {
   routeId: string;
   transaction: VersionedTransaction;
+}
+
+/** Per-route HTTP and submission result markers; accepted does not mean chain confirmation. */
+export interface PreparedTransactionTimingEvent {
+  routeId: string;
+  phase: HttpSendTimingEvent['phase'] | 'accepted' | 'rejected';
+  at: number;
 }
 
 export interface SignedTransactionVariant {
@@ -218,6 +225,12 @@ export async function sendPreparedTransactions(
     minContextSlot: number;
     timeoutMs?: number;
     lookupTables?: AddressLookupTableAccount[];
+    /** Keep this synchronous observer lightweight; exceptions are ignored.
+     * A response marker is HTTP arrival, not a transaction acceptance or confirmation.
+     * Accepted/rejected mark each route's parsed result without waiting for other routes.
+     * Rejected includes uncertain transport failures; it does not prove non-delivery.
+     */
+    onTiming?: (event: PreparedTransactionTimingEvent) => void;
   },
 ): Promise<{ routeId: string; accepted: boolean }[]> {
   validateRoutes(routes);
@@ -290,6 +303,18 @@ export async function sendPreparedTransactions(
   );
   return Promise.all(
     submissions.map(async ({ route, bytes, expectedSignature, client }) => {
+      const notifyResult = (accepted: boolean) => {
+        if (!options.onTiming) return;
+        try {
+          options.onTiming({
+            routeId: route.id,
+            phase: accepted ? 'accepted' : 'rejected',
+            at: performance.timeOrigin + performance.now(),
+          });
+        } catch {
+          // Observer failures must not turn acceptance into rejection.
+        }
+      };
       try {
         const signature = await client.sendTransaction(
           TradeType.Buy,
@@ -299,11 +324,17 @@ export async function sendPreparedTransactions(
             minContextSlot: options.minContextSlot,
             timeoutMs: options.timeoutMs,
             headers: route.headers,
+            onTiming: options.onTiming
+              ? (event) => options.onTiming!({ routeId: route.id, ...event })
+              : undefined,
           },
         );
-        return { routeId: route.id, accepted: signature === expectedSignature };
+        const accepted = signature === expectedSignature;
+        notifyResult(accepted);
+        return { routeId: route.id, accepted };
       } catch {
         // A timeout or error cannot establish whether the provider received the bytes.
+        notifyResult(false);
         return { routeId: route.id, accepted: false };
       }
     }),

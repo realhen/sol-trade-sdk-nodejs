@@ -1,7 +1,7 @@
 import { createServer, type Server } from 'node:http';
 import { Buffer } from 'buffer';
 import bs58 from 'bs58';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   AddressLookupTableAccount,
   Keypair,
@@ -76,6 +76,7 @@ const signed = (variants: ReturnType<typeof prepareTransactionVariants>) =>
   });
 const servers: Server[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(
     servers.splice(0).map(
       (server) =>
@@ -334,6 +335,117 @@ describe('caller-signed browser HTTP submission workflow', () => {
         expect(request.headers['x-test-auth']).toBe('test-only');
       }
     }
+  });
+
+  it('reports each route dispatch after serialization and response before body parsing', async () => {
+    const routes = makeRoutes();
+    const variants = signed(prepareTransactionVariants(makeBase(), [], routes));
+    const order: string[] = [];
+    const events: { routeId: string; phase: string; at: number }[] = [];
+    const stringify = JSON.stringify;
+    vi.spyOn(JSON, 'stringify').mockImplementation((value, ...args) => {
+      if (value?.method === 'sendTransaction') {
+        const index = variants.findIndex((variant) => variant.signedBase64 === value.params[0]);
+        order.push(`${routes[index]!.id}:serialize`);
+      }
+      return stringify(value, ...args);
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, request) => {
+      const routeId = String(url).endsWith('/rpc') ? 'rpc' : 'relay';
+      order.push(`${routeId}:fetch`);
+      const variant = variants.find((entry) => entry.routeId === routeId)!;
+      expect(JSON.parse(request!.body as string).params[0]).toBe(variant.signedBase64);
+      const response = new Response(stringify({ jsonrpc: '2.0', id: 1, result: variant.expectedSignature }));
+      const readText = response.text.bind(response);
+      vi.spyOn(response, 'text').mockImplementation(() => {
+        order.push(`${routeId}:body`);
+        return readText();
+      });
+      return response;
+    });
+    const before = performance.timeOrigin + performance.now();
+    const result = await sendPreparedTransactions(routes, variants, {
+      minContextSlot: 1,
+      onTiming: (event) => {
+        events.push(event);
+        order.push(`${event.routeId}:${event.phase}`);
+      },
+    });
+    const after = performance.timeOrigin + performance.now();
+    expect(result).toEqual([{ routeId: 'rpc', accepted: true }, { routeId: 'relay', accepted: true }]);
+    for (const route of routes) {
+      expect(order.filter((entry) => entry.startsWith(`${route.id}:`))).toEqual([
+        `${route.id}:serialize`, `${route.id}:dispatch`, `${route.id}:fetch`, `${route.id}:response`, `${route.id}:body`, `${route.id}:accepted`,
+      ]);
+    }
+    expect(events).toHaveLength(6);
+    for (const event of events) {
+      expect(Object.keys(event).sort()).toEqual(['at', 'phase', 'routeId']);
+      expect(event.at).toBeGreaterThanOrEqual(before);
+      expect(event.at).toBeLessThanOrEqual(after);
+    }
+  });
+
+  it.each(['accept', 'mismatch', 'http-error', 'parse-error', 'transport-error'] as const)(
+    'isolates throwing timing observers from %s without retries',
+    async (mode) => {
+      const routes = [makeRoutes()[0]!];
+      const variants = signed(prepareTransactionVariants(makeBase(false), [], routes));
+      const phases: string[] = [];
+      const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+        if (mode === 'transport-error') throw new Error('private transport error');
+        const response = new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: mode === 'mismatch' ? 'wrong-signature' : variants[0]!.expectedSignature }), {
+          status: mode === 'http-error' ? 503 : 200,
+        });
+        if (mode === 'parse-error') vi.spyOn(response, 'text').mockRejectedValue(new Error('private body error'));
+        return response;
+      });
+      const result = await sendPreparedTransactions(routes, variants, {
+        minContextSlot: 1,
+        onTiming: (event) => {
+          phases.push(event.phase);
+          throw new Error('observer failure');
+        },
+      });
+      expect(result).toEqual([{ routeId: 'rpc', accepted: mode === 'accept' }]);
+      expect(phases).toEqual(['dispatch', mode === 'transport-error' ? 'error' : 'response', mode === 'accept' ? 'accepted' : 'rejected']);
+      expect(fetch).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('reports a fast route acceptance before a slower route finishes with its own timestamp', async () => {
+    const routes = makeRoutes();
+    const variants = signed(prepareTransactionVariants(makeBase(), [], routes));
+    const events: { routeId: string; phase: string; at: number }[] = [];
+    let clock = 100;
+    vi.spyOn(performance, 'now').mockImplementation(() => clock++);
+    let releaseSlow!: () => void;
+    const slow = new Promise<void>((resolve) => { releaseSlow = resolve; });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      const index = String(url).endsWith('/rpc') ? 0 : 1;
+      if (index === 1) await slow;
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: variants[index]!.expectedSignature }));
+    });
+    let finished = false;
+    const pending = sendPreparedTransactions(routes, variants, {
+      minContextSlot: 1,
+      onTiming: (event) => { events.push(event); },
+    }).then((result) => { finished = true; return result; });
+    try {
+      await vi.waitFor(() => {
+        expect(events.some((event) => event.routeId === 'rpc' && event.phase === 'accepted')).toBe(true);
+      }, { timeout: 100 });
+      expect(finished).toBe(false);
+      expect(events.filter((event) => event.routeId === 'relay').map((event) => event.phase)).toEqual(['dispatch']);
+      const response = events.find((event) => event.routeId === 'rpc' && event.phase === 'response')!;
+      const accepted = events.find((event) => event.routeId === 'rpc' && event.phase === 'accepted')!;
+      expect(accepted.at).toBeGreaterThan(response.at);
+      expect(accepted.at).toBeGreaterThanOrEqual(performance.timeOrigin + 100);
+    } finally {
+      releaseSlow();
+      await pending;
+    }
+    expect(events.filter((event) => event.phase === 'accepted').map((event) => event.routeId)).toEqual(['rpc', 'relay']);
   });
 
   it('validates every signature, byte sequence and header before any request', async () => {

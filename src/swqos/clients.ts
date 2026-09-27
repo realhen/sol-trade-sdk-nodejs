@@ -470,12 +470,23 @@ export const SOLAMI_ENDPOINTS: Record<SwqosRegion, string> = {
 
 // ===== SWQOS Client Interface =====
 
+/** HTTP boundary time in epoch milliseconds, using the monotonic performance clock. */
+export interface HttpSendTimingEvent {
+  phase: 'dispatch' | 'response' | 'error';
+  at: number;
+}
+
 /** Options are local to one submission and never mutate the client. */
 export interface HttpSendOptions {
   minContextSlot?: number;
   headers?: Record<string, string>;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** Synchronous diagnostic observer; keep it lightweight. Exceptions are ignored.
+   * Response means HTTP headers arrived, not that the provider accepted the transaction.
+   * Error means fetch failed; response parsing and provider rejections are not transport errors.
+   */
+  onTiming?: (event: HttpSendTimingEvent) => void;
 }
 
 export interface SwqosClient {
@@ -576,7 +587,23 @@ abstract class BaseClient implements SwqosClient {
         referrerPolicy: 'no-referrer' as const,
         cache: 'no-store' as const,
       };
-      const response = await fetch(url, request);
+      const notify = (phase: HttpSendTimingEvent['phase']) => {
+        if (!options.onTiming) return;
+        try {
+          options.onTiming({ phase, at: performance.timeOrigin + performance.now() });
+        } catch {
+          // Diagnostics must never change submission behavior or trigger retries.
+        }
+      };
+      let response: Response;
+      notify('dispatch');
+      try {
+        response = await fetch(url, request);
+      } catch (error) {
+        notify('error');
+        throw error;
+      }
+      notify('response');
       if (!response.ok) throw new TradeError(response.status, `HTTP error: ${response.statusText}`);
       return await parseBodyAsJsonOrText(response);
     } finally {
