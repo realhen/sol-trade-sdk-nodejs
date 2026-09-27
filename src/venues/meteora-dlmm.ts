@@ -1,8 +1,8 @@
 /** Keyless Meteora DLMM exact-input swaps. RPC preparation is separate from quote/build.
  *
  * State is a caller-owned snapshot, not a subscription. Refresh before trading: bins,
- * volatility, clock epoch and transfer-fee schedules can change. The official quote
- * engine evaluates dynamic fees using wall-clock time. No signing or submission occurs.
+ * volatility, clock epoch and transfer-fee schedules can change. Quotes use explicit
+ * chain time; no machine-clock fallback, signing or submission occurs.
  */
 import BN from 'bn.js';
 import { type Connection, PublicKey, type TransactionInstruction } from '@solana/web3.js';
@@ -12,8 +12,31 @@ import DLMM, {
   getBinArrayLowerUpperBinId, MEMO_PROGRAM_ID, type BinArrayAccount,
 } from '@meteora-ag/dlmm';
 
+import { quoteAtChainTime } from './meteora-dlmm-quote';
+
 export const PROGRAM_ID = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
 const U64_MAX = (1n << 64n) - 1n;
+
+export interface ChainTime {
+  readonly unixTimestampSeconds: bigint;
+  readonly epoch: bigint;
+}
+
+export interface QuoteOptions {
+  /** A coherent chain clock, with timestamp and epoch together. Defaults to the
+   * prepared snapshot clock. A later clock projects fees on the same cached state;
+   * it does not refresh liquidity or mint transfer-fee configuration.
+   */
+  readonly chainTime?: ChainTime;
+}
+
+export interface SnapshotFreshnessPolicy {
+  /** Trusted chain time or an explicitly chosen external reference, never inferred. */
+  readonly currentUnixTimestampSeconds: bigint;
+  readonly maxAgeSeconds: bigint;
+  /** Allowed snapshot lead over reference time; defaults to zero. */
+  readonly maxFutureSkewSeconds?: bigint;
+}
 
 export interface PreparedPool {
   readonly pool: PublicKey;
@@ -21,13 +44,16 @@ export interface PreparedPool {
   readonly tokenYMint: PublicKey;
   readonly tokenXProgram: PublicKey;
   readonly tokenYProgram: PublicKey;
+  /** Informational local receipt time; never used by quote or freshness validation. */
   readonly preparedAtMs: number;
+  readonly chainTime: ChainTime;
   /** Official public-account snapshot. Do not mutate while quoting/building. */
   readonly client: DLMM;
   readonly binArrays: readonly BinArrayAccount[];
 }
 
 export interface SwapQuote {
+  readonly chainTime: ChainTime;
   readonly pool: PublicKey;
   readonly inputMint: PublicKey;
   readonly outputMint: PublicKey;
@@ -56,6 +82,31 @@ function u64(value: bigint, name: string, positive = false): void {
   if (typeof value !== 'bigint' || value < (positive ? 1n : 0n) || value > U64_MAX) {
     throw new Error(`${name} must be ${positive ? 'a positive' : 'an unsigned'} u64 bigint`);
   }
+}
+
+function safeClockValue(value: bigint, name: string): void {
+  if (typeof value !== 'bigint' || value < 0n || value > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error(`${name} must be a nonnegative safe-integer bigint for the DLMM clock`);
+  }
+}
+
+function validateChainTime(time: ChainTime): void {
+  safeClockValue(time.unixTimestampSeconds, 'unixTimestampSeconds');
+  safeClockValue(time.epoch, 'epoch');
+}
+
+/** Explicit freshness gate for cached/streamed public state. Equality at either
+ * boundary is accepted. Passing this gate does not make multi-account RPC reads
+ * atomic; callers still own slot consistency. No local wall clock is consulted.
+ */
+export function validateSnapshotFreshness(prepared: PreparedPool, policy: SnapshotFreshnessPolicy): void {
+  safeClockValue(policy.currentUnixTimestampSeconds, 'currentUnixTimestampSeconds');
+  safeClockValue(policy.maxAgeSeconds, 'maxAgeSeconds');
+  const skew = policy.maxFutureSkewSeconds ?? 0n;
+  safeClockValue(skew, 'maxFutureSkewSeconds');
+  const age = policy.currentUnixTimestampSeconds - prepared.chainTime.unixTimestampSeconds;
+  if (age > policy.maxAgeSeconds) throw new Error('DLMM snapshot is stale');
+  if (age < -skew) throw new Error('DLMM snapshot is in the future beyond allowed clock skew');
 }
 
 function supported(client: DLMM): void {
@@ -94,6 +145,9 @@ function supported(client: DLMM): void {
  */
 export function prepareFromSnapshot(client: DLMM, binArrays: readonly BinArrayAccount[]): PreparedPool {
   supported(client);
+  const chainTime = Object.freeze({ unixTimestampSeconds: BigInt(client.clock.unixTimestamp.toString()),
+    epoch: BigInt(client.clock.epoch.toString()) });
+  validateChainTime(chainTime);
   const unique = new Set<string>();
   for (const binArray of binArrays) {
     if (!binArray.account.lbPair.equals(client.pubkey)) throw new Error('DLMM bin array belongs to another pool');
@@ -106,7 +160,7 @@ export function prepareFromSnapshot(client: DLMM, binArrays: readonly BinArrayAc
   }
   return Object.freeze({ pool: client.pubkey, tokenXMint: client.tokenX.publicKey,
     tokenYMint: client.tokenY.publicKey, tokenXProgram: client.tokenX.owner,
-    tokenYProgram: client.tokenY.owner, preparedAtMs: Date.now(), client,
+    tokenYProgram: client.tokenY.owner, preparedAtMs: Date.now(), chainTime, client,
     binArrays: Object.freeze([...binArrays]),
   });
 }
@@ -148,9 +202,11 @@ export async function prepare(connection: Connection, pool: PublicKey,
 }
 
 /** Quote exact input in either direction using the official fee, bin and transfer-fee math.
- * Never returns a partial fill. No RPC, signer, simulation or transaction submission.
+ * Defaults to the prepared chain timestamp and epoch, regardless of machine time.
+ * Use validateSnapshotFreshness explicitly before execution; offline quotes do not
+ * expire implicitly. Never returns a partial fill. No RPC, signer or submission.
  */
-export function quote(prepared: PreparedPool, inputMint: PublicKey, amountIn: bigint, slippageBps: number): SwapQuote {
+export function quote(prepared: PreparedPool, inputMint: PublicKey, amountIn: bigint, slippageBps: number, options: QuoteOptions = {}): SwapQuote {
   u64(amountIn, 'amountIn', true);
   if (!Number.isInteger(slippageBps) || slippageBps < 0 || slippageBps > 10000) {
     throw new Error('slippageBps must be an integer from 0 to 10000');
@@ -158,14 +214,22 @@ export function quote(prepared: PreparedPool, inputMint: PublicKey, amountIn: bi
   supported(prepared.client);
   const swapForY = inputMint.equals(prepared.tokenXMint);
   if (!swapForY && !inputMint.equals(prepared.tokenYMint)) throw new Error('Input mint is not in the DLMM pool');
-  const raw = prepared.client.swapQuote(new BN(amountIn.toString()), swapForY,
-    new BN(slippageBps), [...prepared.binArrays], false);
+  const chainTime = Object.freeze({ ...(options.chainTime ?? prepared.chainTime) });
+  validateChainTime(chainTime);
+  const lastUpdateTimestamp = BigInt(prepared.client.lbPair.vParameters.lastUpdateTimestamp.toString());
+  if (chainTime.unixTimestampSeconds < prepared.chainTime.unixTimestampSeconds ||
+      chainTime.unixTimestampSeconds < lastUpdateTimestamp) {
+    throw new Error('DLMM quote timestamp predates the snapshot or volatility update; incoherent chain clock');
+  }
+  if (chainTime.epoch < prepared.chainTime.epoch) throw new Error('DLMM quote epoch predates the snapshot epoch');
+  const raw = quoteAtChainTime(prepared.client, prepared.binArrays, new BN(amountIn.toString()),
+    swapForY, slippageBps, Number(chainTime.unixTimestampSeconds), Number(chainTime.epoch));
   if (BigInt(raw.consumedInAmount.toString()) !== amountIn) {
     throw new Error('DLMM quote did not consume the full exact input (partial fill or transfer-fee rounding)');
   }
   const amountOut = BigInt(raw.outAmount.toString());
   u64(amountOut, 'amountOut', true);
-  const result: SwapQuote = Object.freeze({ pool: prepared.pool, inputMint,
+  const result: SwapQuote = Object.freeze({ chainTime, pool: prepared.pool, inputMint,
     outputMint: swapForY ? prepared.tokenYMint : prepared.tokenXMint, amountIn, amountOut,
     minimumAmountOut: BigInt(raw.minOutAmount.toString()), fee: BigInt(raw.fee.toString()),
     protocolFee: BigInt(raw.protocolFee.toString()), binArrays: Object.freeze([...raw.binArraysPubkey]),

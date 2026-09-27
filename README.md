@@ -1,6 +1,6 @@
 ## Additional venue adapters in this fork (0.4.0)
 
-Raydium CLMM, Orca Whirlpool, Meteora DLMM, Meteora Dynamic Bonding Curve (DBC), and Meteora DAMM v1 now have keyless exact-input adapters. Both swap directions use the official venue SDK's quote math. DAMM v1 includes constant-product and stable/depeg math. These APIs are separate from the legacy `TradingClient.buy/sell` facade.
+Raydium CLMM, Orca Whirlpool, Meteora DLMM, Meteora Dynamic Bonding Curve (DBC), and Meteora DAMM v1 now have keyless exact-input adapters. Both swap directions use official venue math; DLMM wraps the pinned SDK's exported bin and fee functions to accept chain time explicitly. DAMM v1 includes constant-product and stable/depeg math. These APIs are separate from the legacy `TradingClient.buy/sell` facade.
 
 ```ts
 // Node (ESM or require); also available as `venues` from the root entrypoint:
@@ -35,9 +35,13 @@ All raw amounts are `bigint`; slippage is an integer number of basis points from
 
 Each namespace exposes `prepare(connection, poolAddress)`. Preparation reads pool, mint, fee, clock and liquidity accounts. Quote and instruction construction make no RPC calls; DLMM's async instruction builder uses its local Anchor coder only. No adapter signs, broadcasts, or silently refreshes state. Refresh preparation before reusing stale data, or replace the exposed official parsed state from authoritative account subscriptions. `meteoraDlmm.prepareFromSnapshot` accepts cached SDK pool/bin-array state. Caller-supplied snapshots must be trusted and internally consistent; preparation is not an atomic multi-account snapshot.
 
-Quotes fail when prepared liquidity cannot consume the complete input. Raydium and Orca expose `expectedAmountOut`; Meteora adapters expose `amountOut`. These are raw user-received token amounts, including supported transfer fees. Fee denominations are documented on each quote type. Limited tick/bin coverage can require a fresh/wider snapshot; DLMM preparation accepts `binArraysPerDirection` (default four). No aggregator or SOL-to-USDC intermediary route is inserted.
+Quotes fail when prepared liquidity cannot consume the complete input. This is a quote-time check: Orca exact-input execution can still partially fill if it reaches its price limit, provided the actual output satisfies the minimum. Its quote metadata explicitly distinguishes a full quoted fill from that execution possibility. CLMM keeps a zero sqrt-price limit, which makes its program enforce full input consumption. Raydium and Orca expose `expectedAmountOut`; Meteora adapters expose `amountOut`. These are raw user-received token amounts, including supported transfer fees. Fee denominations are documented on each quote type. Limited tick/bin coverage can require a fresh/wider snapshot; DLMM preparation accepts `binArraysPerDirection` (default four). No aggregator or SOL-to-USDC intermediary route is inserted.
 
-Token features have explicit boundaries: DBC accepts classic SPL and metadata-only Token-2022 mints; DLMM also accepts transfer-fee mints but rejects transfer hooks and permissioned/disabled pools. Orca accepts caller-prepared transfer-hook account metas and uses official transfer-fee/adaptive-fee calculations. Raydium uses official Token-2022 transfer-fee math. Unsupported mints/pool modes can still be rejected by the deployed program; successful fixtures do not imply every token extension combination is supported.
+`meteoraDlmm.quote` defaults to `state.chainTime` (timestamp and epoch from the chain Clock), independent of the computer clock. Its optional fifth argument, `{ chainTime: { unixTimestampSeconds, epoch } }`, projects fees on cached state; it does not refresh liquidity or mint configuration. Use `meteoraDlmm.validateSnapshotFreshness(state, { currentUnixTimestampSeconds, maxAgeSeconds, maxFutureSkewSeconds })` with a trusted reference before execution. Quotes reject clocks preceding their snapshot or volatility update; later clocks require an explicit epoch. Offline quotes do not expire implicitly.
+
+`reconcileSwapBalances` derives actual gross input spent, net output received, unspent input and `fullyFilled` from caller-supplied raw before/after balances. The caller must establish successful execution and isolate the swap from other balance changes. Account creation, wrapping, closing WSOL and unrelated transfers cannot be mistaken for swap debits/credits. Settlement must use observed amounts, never the quoted output or requested input.
+
+Token features have explicit boundaries: DBC accepts classic SPL and metadata-only Token-2022 mints; DLMM also accepts transfer-fee mints but rejects transfer hooks and permissioned/disabled pools. Orca accepts caller-prepared transfer-hook account metas and uses official transfer-fee/adaptive-fee calculations. Raydium uses official Token-2022 transfer-fee math. CLMM and Orca validate full mint TLV data at prepare, quote and build: unknown or incompatible extensions fail closed. Passive authority, metadata and UI extensions remain compatible with ordinary public transfers in raw units; paused mints and default-frozen accounts are rejected. A disabled hook is distinct from an enabled hook requiring extra accounts. Unsupported mints/pool modes can still be rejected by the deployed program; successful fixtures do not imply every token extension combination is supported.
 
 `sol-trade-sdk/venues/browser` is a separate, fully bundled entrypoint (minified, with a source map) with lexical Buffer/process shims. It does not install globals or add the venue dependencies to the existing `sol-trade-sdk/browser` entrypoint. The package smoke test loads it with string code generation disabled and no Node globals. Node uses the official dependencies, with DLMM/Anchor bundled where needed to repair upstream ESM resolution.
 
@@ -50,12 +54,23 @@ npm run typecheck
 npm run lint
 npm run build
 npm run test:venues:package
+# Requires Rust/Cargo; see scripts/rust-parity/README.md for first-time dependency setup.
+npm run test:rust-parity
 # Start a separate Surfpool backed by your mainnet RPC on 127.0.0.1:8999, then:
 npm run test:venues:surfpool
 VENUES_BROWSER=1 npm run test:venues:surfpool
+npm run test:venues:stale
+VENUES_BROWSER=1 npm run test:venues:stale
+# Run local mutation scenarios serially on a dedicated instance:
+npm run test:venues:transfer-fees
+VENUES_BROWSER=1 npm run test:venues:transfer-fees
+npm run test:venues:partial
+VENUES_BROWSER=1 npm run test:venues:partial
 ```
 
-The local execution test verifies the server identifies as Surfpool and requires a loopback address. It uses generated test wallets and local balance cheatcodes, executes both directions on five public pools, verifies exact input and minimum output, and simulates deliberately excessive output floors. It never uses a real wallet. Public-state fixtures make ordinary tests independent of RPC availability. Local fork execution is not a funded-mainnet test.
+The local execution test verifies the server identifies as Surfpool and requires a loopback address. It uses generated test wallets and local balance cheatcodes, executes both directions on seven public pools (five venues, including DAMM v1 stable and Marinade depeg curves), verifies observed input and minimum output, and simulates deliberately excessive output floors. The stale-quote test executes a competing Orca swap, verifies the old quote fails specifically at its output floor, then verifies a refreshed quote succeeds. The transfer-fee scenario temporarily adds a synthetic fee configuration to local mint/vault clones, executes both fee-input and fee-output directions, checks withheld fees and net credits, then restores public account bytes. That scenario does not claim the real public mint charges a fee. The partial-fill scenario uses an explicit test price limit on a locally cloned Orca pool to verify actual spent/received accounting. Run mutation scenarios serially on a dedicated Surfpool instance. These tests never use a real wallet. Public-state fixtures make ordinary tests independent of RPC availability. Local fork execution is not a funded-mainnet test.
+
+The executable Rust differential compiles attributed upstream builder excerpts from commit `0ba9ec5a652bdb351323252771fec33ea1fb2f80` and compares program IDs, every account/flag and encoded bytes against the built Node adapters. It covers CLMM, Whirlpool and DLMM instruction construction; that upstream revision has no DBC or DAMM v1 builder and these Rust builders do not provide comparable quote engines. CLMM's deliberate zero-limit execution policy is checked separately from Rust's high-level nonzero default.
 
 The pinned official SDK dependency graph retains upstream security advisories (including `bigint-buffer` and Anchor's TOML loader). Compatible dependency patches are recorded in this repository's overrides; npm does not apply dependency-package overrides in a consuming application, so consumers should review/mirror them in their own lockfile. No incompatible `npm audit fix --force` downgrades are applied.
 

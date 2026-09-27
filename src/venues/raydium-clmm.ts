@@ -1,11 +1,16 @@
 /** Raydium CLMM exact-input swaps. Preparation reads RPC; quote/build never sign or send. */
 import { Connection, PublicKey, type EpochInfo, type TransactionInstruction } from '@solana/web3.js';
 import BN from 'bn.js';
-import { ClmmInstrument, CLMM_PROGRAM_ID, PoolUtils, Raydium, type ComputeClmmPoolInfo, type TickArrayLayout } from '@raydium-io/raydium-sdk-v2';
+import { getTransferFeeConfig, unpackMint } from '@solana/spl-token';
+import { assertTokenCapabilities, type TokenMint } from './token-capabilities';
+import { ClmmInstrument, CLMM_PROGRAM_ID, PoolUtils, Raydium, toFeeConfig, type ComputeClmmPoolInfo, type TickArrayLayout } from '@raydium-io/raydium-sdk-v2';
 
 export interface Snapshot {
   pool: PublicKey;
   poolInfo: ComputeClmmPoolInfo;
+  /** Full decoded mint state is required to validate cached snapshots and fee schedules. */
+  mintA: TokenMint;
+  mintB: TokenMint;
   tickArrays: Record<string, ReturnType<typeof TickArrayLayout.decode> & { address: PublicKey }>;
   epochInfo: EpochInfo;
   /** Chain timestamp used by dynamic fees; refresh snapshots before execution. */
@@ -33,7 +38,13 @@ const U64_MAX = (1n << 64n) - 1n;
 function u64(value: bigint, name: string, positive = false): void {
   if (typeof value !== 'bigint' || value < (positive ? 1n : 0n) || value > U64_MAX) throw new Error(`${name} must fit ${positive ? 'positive ' : ''}u64`);
 }
+function validateTokens(snapshot: Snapshot): void {
+  const policy = { venue: 'Raydium CLMM', transferFee: true, transferHook: 'reject' as const };
+  assertTokenCapabilities(snapshot.mintA, new PublicKey(snapshot.poolInfo.mintA.address), policy);
+  assertTokenCapabilities(snapshot.mintB, new PublicKey(snapshot.poolInfo.mintB.address), policy);
+}
 function available(snapshot: Snapshot): void {
+  validateTokens(snapshot);
   const state = snapshot.poolInfo.accInfo;
   // PoolStatusBitIndex::Swap = 4; swap_v2 requires clock strictly after open_time.
   if ((state.status & (1 << 4)) !== 0) throw new Error('CLMM swaps are disabled');
@@ -57,7 +68,16 @@ export async function prepare(connection: Connection, pool: PublicKey): Promise<
   if (blockTimestamp === null) throw new Error('Chain timestamp unavailable');
   const tickArrays = data.tickData[pool.toBase58()];
   if (!tickArrays) throw new Error('CLMM tick arrays unavailable');
-  return { pool, poolInfo: data.computePoolInfo, tickArrays, epochInfo, blockTimestamp };
+  const mints = [data.rpcPoolInfo.mintA, data.rpcPoolInfo.mintB];
+  const mintAccounts = await connection.getMultipleAccountsInfo(mints);
+  const decoded = mints.map((mint, index) => {
+    const account = mintAccounts[index];
+    if (!account) throw new Error('CLMM mint account unavailable');
+    return { ...unpackMint(mint, account, account.owner), tokenProgram: account.owner };
+  });
+  const snapshot = { pool, poolInfo: data.computePoolInfo, mintA: decoded[0]!, mintB: decoded[1]!, tickArrays, epochInfo, blockTimestamp };
+  validateTokens(snapshot);
+  return snapshot;
 }
 
 /** Both directions; integer slippage applies to the net output without floating-point rounding. */
@@ -68,7 +88,11 @@ export function quote(snapshot: Snapshot, inputMint: PublicKey, amountIn: bigint
   const aToB = direction(snapshot, inputMint);
   const result = PoolUtils.computeAmountOut({
     // The upstream simulator updates dynamic fees and limit-order tick fields in place.
-    poolInfo: { ...snapshot.poolInfo, accInfo: snapshot.poolInfo.accInfo ? { ...snapshot.poolInfo.accInfo, dynamicFeeInfo: { ...snapshot.poolInfo.accInfo.dynamicFeeInfo } } : snapshot.poolInfo.accInfo },
+    poolInfo: { ...snapshot.poolInfo,
+      // Derive fee schedules from validated raw mint state, not potentially stale API summaries.
+      mintA: { ...snapshot.poolInfo.mintA, extensions: { ...snapshot.poolInfo.mintA.extensions, feeConfig: toFeeConfig(getTransferFeeConfig(snapshot.mintA)) } },
+      mintB: { ...snapshot.poolInfo.mintB, extensions: { ...snapshot.poolInfo.mintB.extensions, feeConfig: toFeeConfig(getTransferFeeConfig(snapshot.mintB)) } },
+      accInfo: snapshot.poolInfo.accInfo ? { ...snapshot.poolInfo.accInfo, dynamicFeeInfo: { ...snapshot.poolInfo.accInfo.dynamicFeeInfo } } : snapshot.poolInfo.accInfo },
     tickarrayBitmapExtension: snapshot.poolInfo.exBitmapInfo,
     tickArrayCache: Object.fromEntries(Object.entries(snapshot.tickArrays).map(([key, array]) => [key, { ...array, ticks: array.ticks.map(tick => ({ ...tick })) }])), baseMint: inputMint, epochInfo: snapshot.epochInfo,
     amountIn: new BN(amountIn.toString()), slippage: 0, catchLiquidityInsufficient: false,
@@ -81,7 +105,11 @@ export function quote(snapshot: Snapshot, inputMint: PublicKey, amountIn: bigint
   return { pool: snapshot.pool, inputMint, outputMint: new PublicKey(aToB ? snapshot.poolInfo.mintB.address : snapshot.poolInfo.mintA.address), amountIn, expectedAmountOut, minimumAmountOut, feeAmount: BigInt(result.fee.toString()), remainingAccounts: result.remainingAccounts };
 }
 
-/** Builds only swap_v2. Caller creates/funds token accounts and owns signing and submission. */
+/**
+ * Builds only swap_v2. The zero sqrt-price limit preserves CLMM's on-chain full-input
+ * check; changed state may fail instead of settling the quoted amount. Caller owns
+ * token-account setup, signing and submission.
+ */
 export function buildSwapInstruction(snapshot: Snapshot, swap: Quote, accounts: SwapAccounts): TransactionInstruction {
   available(snapshot);
   if (!swap.pool.equals(snapshot.pool)) throw new Error('Quote belongs to a different pool');

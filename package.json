@@ -72,7 +72,11 @@
     "prepublishOnly": "npm run build",
     "build:browser": "tsup src/browser.ts --format esm --dts --platform browser --target es2022",
     "test:venues:package": "node scripts/test-venues-package.mjs",
-    "test:venues:surfpool": "node scripts/test-venues-surfpool.mjs"
+    "test:venues:surfpool": "node scripts/test-venues-surfpool.mjs",
+    "test:rust-parity": "node scripts/test-rust-parity.mjs",
+    "test:venues:stale": "node scripts/test-stale-quote-surfpool.mjs",
+    "test:venues:transfer-fees": "node scripts/test-transfer-fee-surfpool.mjs",
+    "test:venues:partial": "node scripts/test-orca-partial-surfpool.mjs"
   },
   "keywords": [
     "solana",
