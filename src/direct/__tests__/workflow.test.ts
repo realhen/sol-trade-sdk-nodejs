@@ -7,6 +7,8 @@ import {
   quoteDirectSwap,
   buildDirectSwap,
   sizeDirectSellForQuoteValue,
+  sizeDirectSellForExpectedOutput,
+  tryQuoteDirectSell,
 } from "../index";
 beforeAll(() =>
   vi.stubGlobal("fetch", () => {
@@ -360,3 +362,73 @@ describe("single-swap sell sizing with captured pools", () => {
     });
   }
 });
+
+for (const fixture of fixtures) {
+  it(`${fixture.venue}: inverse-sized sells preserve net targets, limits and executable quotes`, async () => {
+    const c = cache(fixture);
+    const normal = await prepareDirectMarket(
+      c.connection,
+      new PublicKey(fixture.pool),
+      new PublicKey(fixture.mint),
+    );
+    const markets = [normal];
+    if (fixture.venue !== "Pump.fun")
+      markets.push(
+        await prepareDirectMarket(c.connection, normal.pool, normal.quoteMint),
+      );
+    c.warm();
+    for (const market of markets) {
+      const saved = fixture.quotes.find(
+        (q: any) => q.input === market.mint.toBase58(),
+      );
+      const limit = BigInt(saved.amount);
+      const full = quoteDirectSwap(
+        market,
+        market.mint,
+        limit,
+        0,
+      ).expectedOutput;
+      for (const target of [
+        1n,
+        full / 7n || 1n,
+        full / 2n || 1n,
+        full,
+        full + 1n,
+      ]) {
+        const sized = sizeDirectSellForExpectedOutput(market, target, limit);
+        expect(sized.inputAmount).toBeLessThanOrEqual(limit);
+        expect(sizeDirectSellForExpectedOutput(market, target, limit)).toEqual(
+          sized,
+        );
+        if (target > full) {
+          expect(sized.inputAmount).toBe(limit);
+          expect(sized.expectedOutput).toBe(full);
+          continue;
+        }
+        expect(sized.expectedOutput).toBeGreaterThanOrEqual(target);
+        if (sized.inputAmount > 1n)
+          expect(
+            tryQuoteDirectSell(market, sized.inputAmount - 1n, 0)
+              ?.expectedOutput ?? 0n,
+          ).toBeLessThan(target);
+        const quote = quoteDirectSwap(
+          market,
+          market.mint,
+          sized.inputAmount,
+          0,
+        );
+        expect(quote.expectedOutput).toBe(sized.expectedOutput);
+        const built = await buildDirectSwap(
+          market,
+          quote,
+          Keypair.generate().publicKey,
+        );
+        expect(built.expectation.inputAmount).toBe(String(sized.inputAmount));
+      }
+      expect(sizeDirectSellForExpectedOutput(market, full, 0n)).toEqual({
+        inputAmount: 0n,
+        expectedOutput: 0n,
+      });
+    }
+  });
+}

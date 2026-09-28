@@ -15,6 +15,8 @@ import {
   createAssociatedTokenAccountIdempotentInstruction,
   getTransferFeeConfig,
   calculateEpochFee,
+  getEpochFee,
+  type TransferFeeConfig,
 } from "@solana/spl-token";
 import { discoverPoolQuoteMint } from "./pool-identity";
 import { directComputeUnitLimit } from "./compute-budget";
@@ -28,6 +30,7 @@ import { prepareTokenAccounts } from "../venues/token-accounts";
 import { venueAccounts, venueAdapter } from "./legacy-venues";
 import { pumpAdapter, pumpDependencies } from "./pump";
 import { assert, type MarketSnapshot, type ChainAccount } from "./snapshot";
+import { sizeDirectSellForExpectedOutput } from "./sell-sizing";
 import type { DirectSwapExpectation } from "./settlement";
 export { discoverPoolQuoteMint } from "./pool-identity";
 export {
@@ -70,6 +73,7 @@ interface State {
   quoteProgram: string;
   nativePump: boolean;
   quote: (input: PublicKey, amount: bigint, slippage: number) => BuiltQuote;
+  inputForOutput: (amount: bigint) => bigint | undefined;
 }
 const states = new WeakMap<PreparedDirectMarket, State>();
 const quotes = new WeakMap<
@@ -136,8 +140,10 @@ export async function prepareDirectMarket(
     quoteDecimals: tokens[1]!.decimals,
   });
   let factory: State["quote"];
+  let inverse: State["inputForOutput"];
   if (venue === "Raydium CLMM") {
     const s = await clmm.prepare(connection, pool);
+    inverse = (amount) => clmm.quoteInputForOutput(s, targetMint, amount);
     factory = (input, amount, bps) => {
       const q = clmm.quote(s, input, amount, bps);
       return {
@@ -154,6 +160,7 @@ export async function prepareDirectMarket(
     };
   } else if (venue === "Orca Whirlpool") {
     const s = await orca.prepare(connection, pool);
+    inverse = (amount) => orca.quoteInputForOutput(s, targetMint, amount);
     factory = (input, amount, bps) => {
       const q = orca.quote(s, input, amount, bps);
       return {
@@ -170,6 +177,7 @@ export async function prepareDirectMarket(
     };
   } else if (venue === "Meteora DLMM") {
     const s = await dlmm.prepare(connection, pool);
+    inverse = (amount) => dlmm.quoteInputForOutput(s, targetMint, amount);
     factory = (input, amount, bps) => {
       const mint = tokens[input.equals(targetMint) ? 0 : 1]!;
       const fee = getTransferFeeConfig(mint);
@@ -245,10 +253,15 @@ export async function prepareDirectMarket(
             }),
         };
       };
-    factory =
-      venue === "Meteora DBC"
-        ? make(await dbc.prepare(connection, pool), dbc)
-        : make(await damm1.prepare(connection, pool), damm1);
+    if (venue === "Meteora DBC") {
+      const s = await dbc.prepare(connection, pool);
+      factory = make(s, dbc);
+      inverse = (amount) => dbc.quoteInputForOutput(s, targetMint, amount);
+    } else {
+      const s = await damm1.prepare(connection, pool);
+      factory = make(s, damm1);
+      inverse = (amount) => damm1.quoteInputForOutput(s, targetMint, amount);
+    }
   } else {
     const accounts = new Map<string, ChainAccount | null>();
     const add = (key: PublicKey, a: AccountInfo<Buffer> | null) =>
@@ -295,16 +308,48 @@ export async function prepareDirectMarket(
             { ...snapshot, wallet: owner.toBase58() },
             input.equals(quoteMint) ? "buy" : "sell",
           );
+    const cachedAdapters = new Map<string, ReturnType<typeof adapter>>();
+    const quoteAdapter = (input: PublicKey) => {
+      const key = input.toBase58();
+      let value = cachedAdapters.get(key);
+      if (!value) {
+        value = adapter(input, PublicKey.default);
+        cachedAdapters.set(key, value);
+      }
+      return value;
+    };
+    const clock = accounts.get("SysvarC1ock11111111111111111111111111111111");
+    const epoch = clock?.data.readBigUInt64LE(16) ?? 0n;
+    const fees = tokens.map(getTransferFeeConfig);
+    const includeTransferFee = (
+      amount: bigint,
+      config: TransferFeeConfig | null,
+    ) => {
+      if (!config || amount === 0n) return amount;
+      const fee = getEpochFee(config, epoch);
+      const bps = BigInt(fee.transferFeeBasisPoints);
+      const uncapped =
+        bps === 10000n
+          ? fee.maximumFee
+          : (amount * bps + 9999n - bps) / (10000n - bps);
+      return amount + (uncapped < fee.maximumFee ? uncapped : fee.maximumFee);
+    };
+    inverse = (amount) => {
+      const netInput = quoteAdapter(targetMint).inputForOutput(
+        includeTransferFee(amount, fees[1]!),
+      );
+      return netInput === undefined
+        ? undefined
+        : includeTransferFee(netInput, fees[0]!);
+    };
     factory = (input, amount, bps) => {
       const inputIndex = input.equals(targetMint) ? 0 : 1,
         outputIndex = 1 - inputIndex;
-      const clock = accounts.get("SysvarC1ock11111111111111111111111111111111");
-      const epoch = clock?.data.readBigUInt64LE(16) ?? 0n;
-      const inputFee = getTransferFeeConfig(tokens[inputIndex]!);
-      const outputFee = getTransferFeeConfig(tokens[outputIndex]!);
+      const inputFee = fees[inputIndex];
+      const outputFee = fees[outputIndex];
       const netInput =
         amount - (inputFee ? calculateEpochFee(inputFee, epoch, amount) : 0n);
-      const grossOutput = adapter(input, PublicKey.default).quote(netInput);
+      const grossOutput = quoteAdapter(input).quote(netInput);
       const expectedOutput =
         grossOutput -
         (outputFee ? calculateEpochFee(outputFee, epoch, grossOutput) : 0n);
@@ -326,6 +371,7 @@ export async function prepareDirectMarket(
     quoteProgram: market.quoteProgram.toBase58(),
     nativePump: venue === "Pump.fun" && quoteMint.equals(NATIVE_MINT),
     quote: factory,
+    inputForOutput: inverse,
   });
   return market;
 }
@@ -375,7 +421,9 @@ export function quoteDirectSwap(
   return q;
 }
 /** Find the least token input whose slippage-protected quote reaches targetAmount.
- * Uses at most 129 cached integer quotes, never an external route or RPC. */
+ * @remarks Uses prepared state only. Venue inverse estimates are verified against exact-input quotes.
+ * @throws When the balance or prepared liquidity cannot meet the protected target.
+ */
 export function sizeDirectSellForQuoteValue(
   market: PreparedDirectMarket,
   targetAmount: bigint,
@@ -384,52 +432,39 @@ export function sizeDirectSellForQuoteValue(
 ): DirectQuote {
   u64(targetAmount);
   u64(maximumInputAmount);
-  const evaluate = (amount: bigint): bigint | null => {
-    try {
-      return quoteDirectSwap(market, market.mint, amount, slippageBps)
-        .minimumOutput;
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        /zero|dust|round|positive u64|amount out must be greater than 0|fees exceed total output; final quote is negative/i.test(
-          error.message,
-        )
-      )
-        return 0n;
-      if (
-        error instanceof Error &&
-        /liquidity|capacity|partial|remaining|exceed.*reserve/i.test(
-          error.message,
-        )
-      )
-        return null;
-      throw error;
-    }
-  };
-  let low = 1n,
-    high = 1n;
-  while (true) {
-    const out = evaluate(high);
-    if (out === null || out >= targetAmount) break;
-    assert(
-      high < maximumInputAmount,
-      "Insufficient token balance for requested quote value",
-    );
-    low = high + 1n;
-    high = high * 2n > maximumInputAmount ? maximumInputAmount : high * 2n;
-  }
-  while (low < high) {
-    const mid = (low + high) / 2n;
-    const out = evaluate(mid);
-    if (out === null || out >= targetAmount) high = mid;
-    else low = mid + 1n;
-  }
-  const found = evaluate(low);
   assert(
-    found !== null && found >= targetAmount,
-    "Insufficient prepared liquidity for requested quote value",
+    Number.isInteger(slippageBps) && slippageBps >= 0 && slippageBps < 10000,
+    "Invalid slippage basis points",
   );
-  return quoteDirectSwap(market, market.mint, low, slippageBps);
+  const protection = BigInt(10000 - slippageBps);
+  const target = (targetAmount * 10000n + protection - 1n) / protection;
+  u64(target);
+  const result = sizeDirectSellForExpectedOutput(
+    market,
+    target,
+    maximumInputAmount,
+  );
+  assert(
+    result.inputAmount > 0n && result.expectedOutput >= target,
+    "Insufficient token balance or prepared liquidity for requested quote value",
+  );
+  return quoteDirectSwap(market, market.mint, result.inputAmount, slippageBps);
+}
+/** Internal quote context for one sizing operation; never used to authorize a transaction.
+ * @remarks Snapshot identity is checked once. Final executable quotes still use quoteDirectSwap.
+ */
+export function directSellSizingContext(market: PreparedDirectMarket) {
+  const s = state(market);
+  const mint = new PublicKey(s.mint);
+  return {
+    inputForOutput: s.inputForOutput,
+    quote: (amount: bigint) => {
+      u64(amount);
+      const output = s.quote(mint, amount, 0).expectedOutput;
+      u64(output);
+      return output;
+    },
+  };
 }
 /** Build ATA/native-SOL setup plus a single pool swap from the sealed quote.
  * Non-native inputs are never funded or converted; the caller supplies their balance. */
