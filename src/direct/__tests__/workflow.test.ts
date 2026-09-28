@@ -301,10 +301,11 @@ it("accepts the official PumpSwap coder 270-byte account prefix", async () => {
   expect(result.expectation.swapInstructions).toHaveLength(2);
 });
 
-describe("shared sell batch planning with captured pools", () => {
+describe("single-swap sell sizing with captured pools", () => {
   for (const fixture of fixtures) {
-    it(`${fixture.venue}: sizes once, caps wallets, sells all and builds sealed allocations without RPC`, async () => {
-      const { planDirectSellBatch } = await import("../index");
+    it(`${fixture.venue}: sizes expected proceeds and builds explicit token amounts without RPC`, async () => {
+      const { sizeDirectSellForExpectedOutput, tryQuoteDirectSell } =
+        await import("../index");
       const c = cache(fixture);
       const market = await prepareDirectMarket(
         c.connection,
@@ -313,7 +314,6 @@ describe("shared sell batch planning with captured pools", () => {
       );
       c.warm();
       const sell = fixture.quotes.find((q: any) => q.input === fixture.mint);
-      expect(sell).toBeDefined();
       const amount = BigInt(sell.amount) * 10n;
       const target = quoteDirectSwap(
         market,
@@ -321,86 +321,42 @@ describe("shared sell batch planning with captured pools", () => {
         amount,
         0,
       ).expectedOutput;
-      const owners = [
-        { id: "small", balance: amount / 10n, weight: 1n },
-        { id: "large", balance: amount * 2n, weight: 1n },
-        { id: "empty", balance: 0n, weight: 1n },
-      ];
-      const plan = planDirectSellBatch(market, target, owners, 500);
-      const protectedPlan = planDirectSellBatch(market, target, owners, 2000);
-      expect(plan.inputAmount).toBe(protectedPlan.inputAmount);
-      expect(plan.inputAmount).toBeLessThanOrEqual(amount);
-      expect(plan.aggregateExpectedOutput).toBeGreaterThanOrEqual(target);
-      expect(plan.allocations.map((a: any) => a.id)).not.toContain("empty");
-      expect(
-        plan.allocations.find((a: any) => a.id === "small")!.quote.inputAmount,
-      ).toBe(amount / 10n);
-      expect(
-        plan.allocations.reduce(
-          (sum: bigint, a: any) => sum + a.quote.inputAmount,
-          0n,
-        ),
-      ).toBe(plan.inputAmount);
-      for (const allocation of plan.allocations) {
-        expect(allocation.quote.inputAmount).toBeLessThanOrEqual(
-          owners.find((o) => o.id === allocation.id)!.balance,
-        );
+      const sized = sizeDirectSellForExpectedOutput(
+        market,
+        target,
+        amount * 2n,
+      );
+      expect(sized.inputAmount).toBeLessThanOrEqual(amount);
+      expect(sized.expectedOutput).toBeGreaterThanOrEqual(target);
+      for (const slippage of [500, 2000]) {
+        const quote = tryQuoteDirectSell(market, sized.inputAmount, slippage)!;
+        expect(quote.inputAmount).toBe(sized.inputAmount);
         expect(
-          (
-            await buildDirectSwap(
-              market,
-              allocation.quote,
-              Keypair.generate().publicKey,
-            )
-          ).instructions.length,
+          (await buildDirectSwap(market, quote, Keypair.generate().publicKey))
+            .instructions.length,
         ).toBeGreaterThan(0);
       }
-      const tiny = planDirectSellBatch(
-        market,
-        1n,
-        [
-          { id: "a", balance: amount * 2n, weight: 1n },
-          { id: "b", balance: amount * 2n, weight: 1n },
-        ],
-        0,
-      );
-      expect(tiny.allocations.length).toBeGreaterThan(0);
-      expect(tiny.aggregateExpectedOutput).toBeGreaterThanOrEqual(1n);
-      const smallTarget = planDirectSellBatch(
-        market,
-        3n,
-        [{ id: "single", balance: amount * 2n, weight: 1n }],
-        0,
-      );
-      const smallWallets = Array.from({ length: 4 }, (_, index) => ({
-        id: `small-${index}`,
-        balance: (smallTarget.inputAmount + 1n) / 2n,
-        weight: 1n,
-      }));
-      const twoWallets = planDirectSellBatch(
-        market,
-        3n,
-        smallWallets.slice(0, 2),
-        0,
-      );
-      const fourWallets = planDirectSellBatch(market, 3n, smallWallets, 0);
-      expect(fourWallets.inputAmount).toBeGreaterThanOrEqual(
-        twoWallets.inputAmount,
-      );
-      expect(fourWallets.aggregateExpectedOutput).toBeGreaterThanOrEqual(
-        twoWallets.aggregateExpectedOutput,
-      );
-      const all = planDirectSellBatch(
+      const capped = sizeDirectSellForExpectedOutput(
         market,
         target * 100n,
-        [{ id: "only", balance: amount, weight: 1n }],
-        500,
+        amount,
       );
-      expect(all.sellAll).toBe(true);
-      expect(all.inputAmount).toBe(amount);
+      expect(capped.inputAmount).toBe(amount);
+      expect(capped.expectedOutput).toBeLessThan(target * 100n);
+      expect(
+        sizeDirectSellForExpectedOutput(market, target, 0n).inputAmount,
+      ).toBe(0n);
+      const tiny = sizeDirectSellForExpectedOutput(market, 1n, amount);
+      expect(tiny.expectedOutput).toBeGreaterThanOrEqual(1n);
+      expect(tryQuoteDirectSell(market, tiny.inputAmount, 0)).not.toBeNull();
+      if (tiny.inputAmount > 1n)
+        expect(tryQuoteDirectSell(market, tiny.inputAmount - 1n, 0)).toBeNull();
+      expect(() => tryQuoteDirectSell(market, sized.inputAmount, -1)).toThrow(
+        /slippage/,
+      );
       expect(() =>
-        planDirectSellBatch(market, target, [owners[0]!, owners[0]!], 100),
-      ).toThrow(/Duplicate/);
+        sizeDirectSellForExpectedOutput(market, target, -1n),
+      ).toThrow(/limit/);
     });
   }
 });
