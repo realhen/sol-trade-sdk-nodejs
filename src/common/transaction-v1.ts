@@ -231,7 +231,7 @@ export function compileV1Transaction(options: CompileV1Options): TransactionV1 {
     throw new Error(
       "An explicit compute unit limit is required to preserve the priority fee when converting to v1",
     );
-  if (price !== undefined)
+  if (price !== undefined && options.config?.priorityFeeLamports === undefined)
     config.priorityFeeLamports =
       (price * BigInt(config.computeUnitLimit!) + 999_999n) / 1_000_000n;
   return new TransactionV1(

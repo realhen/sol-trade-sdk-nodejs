@@ -100,6 +100,9 @@ describe("direct facade public account workflows", () => {
         );
         expect(q.expectedOutput).toBe(BigInt(saved.output));
         const b = await buildDirectSwap(m, q, owner);
+        expect(b.computeUnitLimit).toBeGreaterThan(0);
+        expect(b.computeUnitLimit).toBeLessThan(1_400_000);
+        expect(b.computeUnitLimit % 5_000).toBe(0);
         expect(b.expectation.swapInstructions).toHaveLength(1);
         expect(b.expectation.pool).toBe(fixture.pool);
         expect(b.expectation.inputAmount).toBe(saved.amount);
