@@ -300,3 +300,72 @@ it("accepts the official PumpSwap coder 270-byte account prefix", async () => {
   const result = await buildDirectSwap(m, q, Keypair.generate().publicKey);
   expect(result.expectation.swapInstructions).toHaveLength(2);
 });
+
+describe("shared sell batch planning with captured pools", () => {
+  for (const fixture of fixtures) {
+    it(`${fixture.venue}: sizes once, caps wallets, sells all and builds sealed allocations without RPC`, async () => {
+      const { planDirectSellBatch } = await import("../index");
+      const c = cache(fixture);
+      const market = await prepareDirectMarket(
+        c.connection,
+        new PublicKey(fixture.pool),
+        new PublicKey(fixture.mint),
+      );
+      c.warm();
+      const sell = fixture.quotes.find((q: any) => q.input === fixture.mint);
+      expect(sell).toBeDefined();
+      const amount = BigInt(sell.amount) * 10n;
+      const target = quoteDirectSwap(
+        market,
+        market.mint,
+        amount,
+        0,
+      ).expectedOutput;
+      const owners = [
+        { id: "small", balance: amount / 10n, weight: 1n },
+        { id: "large", balance: amount * 2n, weight: 1n },
+        { id: "empty", balance: 0n, weight: 1n },
+      ];
+      const plan = planDirectSellBatch(market, target, owners, 500);
+      const protectedPlan = planDirectSellBatch(market, target, owners, 2000);
+      expect(plan.inputAmount).toBe(protectedPlan.inputAmount);
+      expect(plan.inputAmount).toBeLessThanOrEqual(amount);
+      expect(plan.aggregateExpectedOutput).toBeGreaterThanOrEqual(target);
+      expect(plan.allocations.map((a: any) => a.id)).not.toContain("empty");
+      expect(
+        plan.allocations.find((a: any) => a.id === "small")!.quote.inputAmount,
+      ).toBe(amount / 10n);
+      expect(
+        plan.allocations.reduce(
+          (sum: bigint, a: any) => sum + a.quote.inputAmount,
+          0n,
+        ),
+      ).toBe(plan.inputAmount);
+      for (const allocation of plan.allocations) {
+        expect(allocation.quote.inputAmount).toBeLessThanOrEqual(
+          owners.find((o) => o.id === allocation.id)!.balance,
+        );
+        expect(
+          (
+            await buildDirectSwap(
+              market,
+              allocation.quote,
+              Keypair.generate().publicKey,
+            )
+          ).instructions.length,
+        ).toBeGreaterThan(0);
+      }
+      const all = planDirectSellBatch(
+        market,
+        target * 100n,
+        [{ id: "only", balance: amount, weight: 1n }],
+        500,
+      );
+      expect(all.sellAll).toBe(true);
+      expect(all.inputAmount).toBe(amount);
+      expect(() =>
+        planDirectSellBatch(market, target, [owners[0]!, owners[0]!], 100),
+      ).toThrow(/Duplicate/);
+    });
+  }
+});

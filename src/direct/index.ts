@@ -558,3 +558,9 @@ export async function buildDirectSwap(
     ),
   };
 }
+
+export {
+  planDirectSellBatch,
+  type DirectSellBatch,
+  type SellBatchWallet,
+} from "./batch-sell";
