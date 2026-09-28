@@ -1,3 +1,4 @@
+import { TRADING_PROGRAMS } from "./trading-programs";
 import bs58 from "bs58";
 import { Buffer } from "buffer";
 
@@ -18,6 +19,46 @@ export function readPriorityObservation(
   raw: unknown,
   pool: string,
 ): PriorityObservation | undefined {
+  return decodePriorityObservation(raw, pool);
+}
+
+/** Landed fee from successful activity invoking a supported program, including router CPIs.
+ * This is a broad venue cohort, not a claim that every instruction is a swap. Account
+ * mentions alone are insufficient. Callers own freshness, sampling and deduplication.
+ */
+export function readTradingPriorityObservation(
+  raw: unknown,
+): (PriorityObservation & { venues: string[] }) | undefined {
+  const observation = decodePriorityObservation(raw);
+  if (!observation) return;
+  try {
+    const tx = raw as any;
+    const instructions = [
+      ...tx.transaction.message.instructions,
+      ...(tx.meta.innerInstructions ?? []).flatMap(
+        (group: any) => group.instructions,
+      ),
+    ];
+    const venues = [
+      ...new Set<string>(
+        instructions.flatMap((ix: any) => {
+          const venue = Object.hasOwn(TRADING_PROGRAMS, ix.programId)
+            ? TRADING_PROGRAMS[ix.programId]
+            : undefined;
+          return venue ? [venue] : [];
+        }),
+      ),
+    ];
+    return venues.length ? { ...observation, venues } : undefined;
+  } catch {
+    return;
+  }
+}
+
+function decodePriorityObservation(
+  raw: unknown,
+  pool?: string,
+): PriorityObservation | undefined {
   try {
     const tx = raw as any;
     const message = tx.transaction.message;
@@ -25,9 +66,10 @@ export function readPriorityObservation(
       tx.meta.err !== null ||
       !Number.isSafeInteger(tx.slot) ||
       !Number.isSafeInteger(tx.blockTime) ||
-      !message.accountKeys.some(
-        (key: any) => key.pubkey === pool && key.writable === true,
-      )
+      (pool !== undefined &&
+        !message.accountKeys.some(
+          (key: any) => key.pubkey === pool && key.writable === true,
+        ))
     )
       return;
     let limit: number | undefined;
