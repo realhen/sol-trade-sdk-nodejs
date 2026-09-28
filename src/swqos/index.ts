@@ -52,3 +52,5 @@ export {
   FigmentClient,
   AlchemyClient,
 } from './providers';
+
+export * from "./prepared";

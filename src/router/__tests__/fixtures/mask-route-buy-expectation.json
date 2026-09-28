@@ -1,0 +1,10 @@
+{
+  "owner": "BnqKffpQSuYeD6Zrd7cMhfWaCibwSiqCFSZMYveLyZNM",
+  "inputMint": "So11111111111111111111111111111111111111112",
+  "outputMint": "BwgWHpEAyPnHxmRfYN1tNPS5ADLSiZG3io7uHLJQiT4A",
+  "inputTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+  "outputTokenProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+  "amountIn": "100000000",
+  "minimumAmountOut": "407620264689",
+  "swapInstructionData": "0ZhTk3z+2OkFAOH1BQAAAABOF83mYwAAAPQBAAAAAAMAAABLAAAAAMwHAAIoRB8AAi4QJwID"
+}

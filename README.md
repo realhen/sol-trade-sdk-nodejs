@@ -106,6 +106,11 @@ The local execution test verifies the server identifies as Surfpool and requires
 The executable Rust differential compiles attributed upstream builder excerpts from commit `0ba9ec5a652bdb351323252771fec33ea1fb2f80` and compares program IDs, every account/flag and encoded bytes against the built Node adapters. It covers CLMM, Whirlpool and DLMM instruction construction; that upstream revision has no DBC or DAMM v1 builder and these Rust builders do not provide comparable quote engines. CLMM's deliberate zero-limit execution policy is checked separately from Rust's high-level nonzero default.
 
 The pinned official SDK dependency graph retains upstream security advisories (including `bigint-buffer` and Anchor's TOML loader). Compatible dependency patches are recorded in this repository's overrides; npm does not apply dependency-package overrides in a consuming application, so consumers should review/mirror them in their own lockfile. No incompatible `npm audit fix --force` downgrades are applied.
+## Version 1 browser transactions (0.4.0)
+
+Pass `version: 1` to `buildSwapTransaction` or use `compileV1Transaction` for v1 transactions with explicit compute and loaded-account-data limits. `TransactionV1` encodes, signs and validates canonical wire bytes through Solana Kit 8.3.0. It enforces the 4,096-byte envelope, 12-signature, 64-account and 64-instruction limits. V1 expands account addresses rather than using lookup tables. Prepared sender variants preserve the transaction version and resource configuration, changing only the configured tip.
+
+`upgradeTransactionToV1` converts unsigned legacy/v0 transactions using caller-supplied lookup tables. Existing signatures are rejected. Compute-budget instructions become v1 configuration; a positive legacy compute-unit price requires an explicit compute-unit limit to preserve the total priority fee. Existing SDK callers retain the v0 default for compatibility; applications can require v1 at their signing and submission boundaries. Use Surfpool 1.5 or newer for local v1 validation.
 
 ## Browser HTTP support in this fork (0.2.0)
 
@@ -568,3 +573,134 @@ it is not a standalone script for direct inclusion in a page.
 Strict TypeScript consumers need the Node type declarations used by
 `@solana/web3.js` (for example, `@types/node`). These are compile-time types;
 the browser runtime does not require a global `process` or `Buffer`.
+
+
+### Browser provider settings
+
+`sol-trade-sdk/swqos-settings` exposes transport-free HTTP provider metadata and tip-address validation for settings pages. `HttpSenderRoute.apiKey` is forwarded to each provider's own HTTP client; keys must stay in trusted caller storage. Prepared submission supports up to 64 routes including the untipped default RPC. Every multi-route submission still requires matching same-nonce transaction variants and caller-owned signatures. Native-only and blacklisted providers are excluded from the settings catalog.
+
+The browser submission workflow tests all 11 supported HTTP providers concurrently against loopback fixtures, including v1 signatures, provider-specific authentication, query preservation and normalized endpoint paths. These fixtures do not establish production provider availability or transaction landing rates. The 0slot HTTPS default follows its [official endpoint documentation](https://0slot.trade/docs.php); providers whose bundled defaults are HTTP-only require callers to supply an HTTPS endpoint in browser settings.
+
+### Jupiter multi-hop routes
+
+`sol-trade-sdk/router` (Node) and `sol-trade-sdk/router/browser` (bundled browser ESM)
+prepare unsigned exact-input routes using Jupiter Swap API v2 `/build`. This supports
+SOL-funded trading through intermediate pairs such as USDC and MET without making
+each venue builder implement conversion. The caller retains signing, transaction
+version, compute budget, durable nonce, sender selection and submission ownership.
+
+```ts
+import { prepareJupiterRoute, assertRouterTradeFresh } from 'sol-trade-sdk/router';
+const route = await prepareJupiterRoute({
+  connection, owner, inputMint, outputMint,
+  amountIn: 10_000_000n,
+  slippageBps: 100,
+  apiKey: process.env.JUPITER_API_KEY,
+  wrapNativeInput: true, // only when inputMint is WSOL; both native flags default false
+});
+assertRouterTradeFresh(route); // repeat immediately before signing
+// Compile route.instructions with route.lookupTables and your transaction policy.
+```
+
+Provider JSON is untrusted: the adapter checks the pinned on-chain route-v2 binary
+layout, owner and endpoint ATAs, raw input/floor, allocation graph, setup instructions,
+shared account PDAs and actual on-chain lookup tables. Quotes expire from preparation
+start (10 seconds by default) and mutation invalidates their identity. Unknown route
+layouts, opaque dynamic/RFQ variants, extra transfers and router referral fees fail
+closed. Provider compute-budget instructions are excluded; the caller supplies its own.
+
+Native SOL input wraps exactly the requested budget and leaves the WSOL ATA open,
+preserving an existing balance. Explicit `unwrapNativeOutput` closes the owner's output
+WSOL ATA to the same owner, including any preexisting WSOL. `normalizeJupiterFill` uses
+Jupiter-scoped WSOL transfers and actual token-account deltas, so previous balances,
+rent and sender tips are not counted as trade proceeds. Fetch its jsonParsed receipt
+at confirmed or finalized commitment and persist the prepared endpoint, amount, floor
+and `swapInstructionData` expectations before broadcast. Incomplete or ambiguous
+receipts are rejected rather than converted into estimated fills.
+
+For an already-funded pool quote token, call
+`discoverPoolQuoteMint(connection, poolAddress, targetMint)` to authenticate the
+opposite pool mint, then request `quoteMint → targetMint` for buys and
+`targetMint → quoteMint` for sells. Identity discovery supports all eleven venue
+families and may use a cache-backed connection; it does not establish executable
+liquidity or token-extension support. Set `directPairOnly: true` and keep both
+native flags false to prohibit extra conversions and split routes. This checks
+the decoded instruction's single 10000-bps step and the exact endpoint graph.
+Jupiter V2 `/build` has no documented direct-only request parameter, so a returned
+multihop route is rejected even when a direct pool might exist. This policy does
+not pin Jupiter to the pool used for identity discovery. Persist `directPairOnly`
+with the fill expectation so receipt validation retains the same restriction.
+
+`prepareJupiterSellForQuoteValue({ ...options, targetAmount })` sizes a sale in
+any output mint's atomic units; it uses the same bounded search and trade
+validation as the SOL helper below. Neither helper obtains missing input tokens
+or converts SOL to fund the requested input. The caller checks its wallet's
+existing spendable input balance before signing.
+
+`prepareJupiterSellForSolValue` sizes a token sale for an expected SOL value within a
+bounded eight-quote search, never exceeding supplied holdings or the expected target.
+Its default target tolerance is 10 bps below the target; execution still varies within
+swap slippage. Some Pump legs permit partial input consumption, exposed as
+`allowsPartialFill`; always account for actual executed amounts.
+
+Axiom FLASH transaction research showed direct DEX calls and intermediate-balance
+forwarding, without a documented public integration API. Jupiter's custom-build API
+provides a supported integration while retaining our transaction controls. This does
+not establish identical pool selection or universal Axiom coverage: route availability,
+liquidity, supported instruction layouts and transaction limits still apply. API keys
+are optional on the tested endpoint, but production wallet groups should use configured
+request limits. No fallback signs an unchecked provider transaction.
+
+Validation commands: `npm test`, `npm run test:router:package` (after `npm run build`)
+and `npm run test:router:surfpool`. The latter only signs generated wallets against a
+verified loopback Surfpool runtime; it fetches unsigned Jupiter builds over HTTPS.
+`npm run test:router:funded` additionally checks a locally funded MET/Pump pair in
+both directions, single-leg routing, and strict raw receipt balance deltas.
+Use Surfpool 1.6.0 for v1 transaction support. Read its evidence report for individual
+cases: unavailable upstream quotes and malformed local receipt metadata are reported
+separately from successful execution. Optional harness-only receipt metadata correction
+never changes the SDK's strict receipt validator or the extension's accounting behavior.
+
+### Pool-specific direct swaps (no routing service)
+
+`sol-trade-sdk/direct` and `sol-trade-sdk/direct/browser` expose a single API for
+Pump.fun, PumpSwap, Raydium CPMM/AMM v4/LaunchLab/CLMM, Orca Whirlpool, and
+Meteora DAMM v1/v2, DLMM, and DBC. No Jupiter account or API key is required.
+
+```ts
+import { prepareDirectMarket, quoteDirectSwap, buildDirectSwap,
+  normalizeDirectFill } from 'sol-trade-sdk/direct';
+const market = await prepareDirectMarket(connection, pool, targetMint);
+const quote = quoteDirectSwap(market, market.quoteMint, amountIn, 100);
+const { instructions, expectation } = await buildDirectSwap(market, quote, owner);
+// Caller composes, signs, submits, and retrieves a confirmed jsonParsed receipt.
+const fill = normalizeDirectFill(confirmedReceipt, expectation);
+```
+
+Preparation reads only through the supplied Connection and can run against a
+recording or cache-only connection. Rebuild the market when its streamed account
+dependencies change. Quotes and builds perform no RPC; quote objects are bound
+to the exact prepared market. `sizeDirectSellForQuoteValue(market, targetAmount,
+maximumInputAmount, slippageBps)` finds a token-input quote whose protected output
+reaches the requested quote-token value using bounded local integer search.
+
+For expected-proceeds sizing, use `sizeDirectSellForExpectedOutput(market,
+target, maxInput)`, then quote and build the returned token amount. This helper
+uses the pool curve and a caller-provided input bound; slippage is applied to the
+subsequent quote. `tryQuoteDirectSell(market, inputAmount, slippageBps)` returns a
+sealed explicit-input quote, or null for unexecutable dust.
+
+Version 0.12.0 removes `planDirectSellBatch`, `DirectSellBatch` and
+`SellBatchWallet`. Wallet selection, weights, balance caps, redistribution,
+sell-all policy and dust consolidation belong in the calling application.
+The SDK does not accept a wallet batch or produce per-wallet allocations.
+
+Non-native swaps spend an already funded input-token ATA and return the pool's
+other token. The SDK does not convert SOL to fund a non-SOL quote. Native SOL
+endpoints use wrapping/cleanup where the venue requires WSOL; Pump native curves
+use their native-SOL instructions. Token-2022 transfer fees are supported by
+CPMM, DAMM v2, CLMM, Orca and DLMM; unsupported extensions/configurations fail
+closed. Persist the complete returned expectation for receipt verification;
+settled amounts come from confirmed balance changes and verified swap scope,
+including partial actual input on Orca. The older `router` API remains available
+for compatibility, separately from this direct API.
