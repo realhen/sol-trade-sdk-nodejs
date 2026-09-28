@@ -73,6 +73,8 @@ export interface CompileTransactionOptions {
   recentBlockhash: string;
   lookupTables?: AddressLookupTableAccount[];
   version?: 0 | 1;
+  /** Exact total for v1 messages; avoids CU-price conversion rounding. */
+  priorityFeeLamports?: bigint;
 }
 
 /** Compile locally without a wallet or RPC; only the payer may be required to sign. */
@@ -91,9 +93,23 @@ export function compileTransaction({
   recentBlockhash,
   lookupTables = [],
   version = 0,
+  priorityFeeLamports,
 }: CompileTransactionOptions): VersionedTransaction | TransactionV1 {
+  if (
+    priorityFeeLamports !== undefined &&
+    (version !== 1 ||
+      priorityFeeLamports < 0n ||
+      priorityFeeLamports > 0xffffffffffffffffn)
+  )
+    throw new Error("Exact priority fee requires v1 and an unsigned u64 total");
   if (version === 1) {
-    const tx = compileV1Transaction({ payer, instructions, recentBlockhash });
+    const tx = compileV1Transaction({
+      payer,
+      instructions,
+      recentBlockhash,
+      config:
+        priorityFeeLamports === undefined ? undefined : { priorityFeeLamports },
+    });
     if (tx.message.header.numRequiredSignatures !== 1)
       throw new Error("Transaction must require only the payer signature");
     return tx;

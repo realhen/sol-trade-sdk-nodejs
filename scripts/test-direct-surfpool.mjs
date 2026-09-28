@@ -64,14 +64,15 @@ await rpc("surfnet_setAccount", [
   owner.publicKey.toBase58(),
   { lamports: 2_000_000_000 },
 ]);
-async function send(instructions) {
+async function send(instructions, computeUnitLimit = 50_000) {
   const block = await connection.getLatestBlockhash();
   const tx = buildSwapTransaction({
     version: 1,
     payer: owner.publicKey,
     instructions,
     recentBlockhash: block.blockhash,
-    computeUnitLimit: 1_400_000,
+    computeUnitLimit,
+    computeUnitPriceMicroLamports: 0n,
   });
   tx.sign([owner]);
   const wire = Buffer.from(tx.serialize()).toString("base64");
@@ -146,7 +147,7 @@ for (const fixture of fixtures) {
   ]);
   const quote = quoteDirectSwap(market, market.quoteMint, 100_000n, 100);
   const buy = await buildDirectSwap(market, quote, owner.publicKey);
-  const bought = await send(buy.instructions);
+  const bought = await send(buy.instructions, buy.computeUnitLimit);
   if (process.env.DIRECT_TEST_OUTPUT_DIR) {
     await mkdir(process.env.DIRECT_TEST_OUTPUT_DIR, { recursive: true });
     await writeFile(
@@ -160,7 +161,7 @@ for (const fixture of fixtures) {
   market = await prepareDirectMarket(connection, pool, mint);
   const sellQuote = quoteDirectSwap(market, mint, buyFill.outputAmount, 100);
   const sell = await buildDirectSwap(market, sellQuote, owner.publicKey);
-  const sold = await send(sell.instructions);
+  const sold = await send(sell.instructions, sell.computeUnitLimit);
   if (process.env.DIRECT_TEST_OUTPUT_DIR) {
     await mkdir(process.env.DIRECT_TEST_OUTPUT_DIR, { recursive: true });
     await writeFile(
@@ -181,6 +182,7 @@ for (const fixture of fixtures) {
         output: String(buyFill.outputAmount),
         quoted: String(quote.expectedOutput),
         computeUnits: bought.computeUnits,
+        computeUnitLimit: buy.computeUnitLimit,
       },
       sell: {
         signature: sold.signature,
@@ -188,6 +190,7 @@ for (const fixture of fixtures) {
         output: String(sellFill.outputAmount),
         quoted: String(sellQuote.expectedOutput),
         computeUnits: sold.computeUnits,
+        computeUnitLimit: sell.computeUnitLimit,
       },
       localOnly: true,
     }),

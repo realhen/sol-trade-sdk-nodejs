@@ -854,9 +854,10 @@ describe("v1 browser submission workflow", () => {
       recentBlockhash: nonceHash,
       computeUnitLimit: 350_000,
       computeUnitPriceMicroLamports: 2_857_143n,
+      priorityFeeLamports: 1_000_000n,
       durableNonce: { nonceAccount, authority: payer.publicKey, nonceHash },
     });
-    expect(base.message.config.priorityFeeLamports).toBe(1_000_001n);
+    expect(base.message.config.priorityFeeLamports).toBe(1_000_000n);
     expect(base.message.config.computeUnitLimit).toBe(350_000);
     expect(base.message.config.loadedAccountsDataSizeLimit).toBe(
       64 * 1024 * 1024,

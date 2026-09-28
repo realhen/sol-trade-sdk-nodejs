@@ -16,6 +16,7 @@ import {
   calculateEpochFee,
 } from "@solana/spl-token";
 import { discoverPoolQuoteMint } from "./pool-identity";
+import { directComputeUnitLimit } from "./compute-budget";
 import { assertTokenCapabilities } from "../venues/token-capabilities";
 import * as clmm from "../venues/raydium-clmm";
 import * as orca from "../venues/orca-whirlpool";
@@ -447,6 +448,7 @@ export async function buildDirectSwap(
 ): Promise<{
   instructions: TransactionInstruction[];
   expectation: DirectSwapExpectation;
+  computeUnitLimit: number;
 }> {
   owner = clone(owner);
   const s = state(market),
@@ -545,5 +547,14 @@ export async function buildDirectSwap(
         data: ix.data.toString("base64"),
       })),
   };
-  return { instructions: [...setup, ...swap, ...cleanup], expectation };
+  return {
+    instructions: [...setup, ...swap, ...cleanup],
+    expectation,
+    computeUnitLimit: directComputeUnitLimit(
+      market.venue,
+      setup,
+      swap,
+      cleanup,
+    ),
+  };
 }
