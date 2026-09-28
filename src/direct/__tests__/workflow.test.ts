@@ -366,6 +366,30 @@ describe("shared sell batch planning with captured pools", () => {
       );
       expect(tiny.allocations.length).toBeGreaterThan(0);
       expect(tiny.aggregateExpectedOutput).toBeGreaterThanOrEqual(1n);
+      const smallTarget = planDirectSellBatch(
+        market,
+        3n,
+        [{ id: "single", balance: amount * 2n, weight: 1n }],
+        0,
+      );
+      const smallWallets = Array.from({ length: 4 }, (_, index) => ({
+        id: `small-${index}`,
+        balance: (smallTarget.inputAmount + 1n) / 2n,
+        weight: 1n,
+      }));
+      const twoWallets = planDirectSellBatch(
+        market,
+        3n,
+        smallWallets.slice(0, 2),
+        0,
+      );
+      const fourWallets = planDirectSellBatch(market, 3n, smallWallets, 0);
+      expect(fourWallets.inputAmount).toBeGreaterThanOrEqual(
+        twoWallets.inputAmount,
+      );
+      expect(fourWallets.aggregateExpectedOutput).toBeGreaterThanOrEqual(
+        twoWallets.aggregateExpectedOutput,
+      );
       const all = planDirectSellBatch(
         market,
         target * 100n,
