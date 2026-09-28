@@ -1,3 +1,25 @@
+## Inverse sell sizing in this fork (0.14.0)
+
+`sizeDirectSellForExpectedOutput(market, target, maxInput)` now uses venue inverse
+quotes before verifying exact-input output and predecessor amounts. Integer fee
+rounding is corrected locally; final transactions remain sealed exact-input swaps.
+Sizing, quoting and correction use the prepared snapshot without RPC. Refresh the
+snapshot from authoritative streamed dependencies before reusing it.
+
+Pump.fun/PumpSwap, Raydium CPMM/AMM v4/LaunchLab/CLMM, Orca Whirlpool, Meteora
+DLMM/DBC and supported DAMM v2 fee modes have inverse paths. DAMM v1 retains forward
+search because its vault-share accounting is not covered by its exposed curve
+inverse. DAMM v2 rate-limiter configurations also retain forward search. Inverse
+failures or unusual rounding fall back to the forward quote, which remains the
+source of executable amounts and validation errors.
+
+`npm run benchmark:sell-sizing -- BEFORE_MODULE AFTER_MODULE [VENUE]` compares two
+independently bundled direct modules against captured accounts (100 samples after
+20 warmups, alternating order). Optional `planSellBatch` exports also measure a
+three-wallet preset at 50% slippage, including a fresh-snapshot scenario. Preparation
+is outside the timing, warmed RPC is forbidden, and output/amount parity is checked.
+Results describe local CPU work, not signing, submission or mainnet landing.
+
 ## Direct non-SOL pairs in this fork (0.5.0)
 
 The legacy CPMM, AMM v4, DAMM v2, PumpSwap and LaunchLab builders now accept explicit pool mint pairs. A requested input or output identifies the direction; the omitted side is inferred from the supplied pool. Mismatched pairs fail before instruction construction. PumpSwap chooses its on-chain buy/sell instruction from the pool's base/quote orientation, independently of the application's buy/sell label. The five prepared venue adapters below already accept arbitrary pool pairs.

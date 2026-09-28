@@ -1,5 +1,6 @@
 import {
   quoteDirectSwap,
+  directSellSizingContext,
   type DirectQuote,
   type PreparedDirectMarket,
 } from "./index";
@@ -46,7 +47,9 @@ export function tryQuoteDirectSell(
  * @remarks Uses only prepared pool state. Returns the closest quoteable amount when the target
  * exceeds the input limit or prepared liquidity; returns zero for wholly unexecutable dust.
  * This is a single-swap curve estimate. It knows no wallets, allocation weights or presets.
- * Slippage is applied separately when quoting the chosen token amount.
+ * Slippage is applied separately when quoting the chosen token amount. Venue inverse quotes
+ * provide a starting amount; forward quotes verify and correct integer rounding. Unsupported
+ * exact-output configurations or unavailable inverse quotes use bounded forward search.
  */
 export function sizeDirectSellForExpectedOutput(
   market: PreparedDirectMarket,
@@ -62,23 +65,66 @@ export function sizeDirectSellForExpectedOutput(
     typeof maxInput === "bigint" && maxInput >= 0n && maxInput <= max,
     "Invalid sell input limit",
   );
+  const context = directSellSizingContext(market);
+  const evaluated = new Map<bigint, bigint | null>();
   const evaluate = (amount: bigint): bigint | null => {
     if (!amount) return 0n;
+    if (evaluated.has(amount)) return evaluated.get(amount)!;
     try {
-      return quoteDirectSwap(market, market.mint, amount, 0).expectedOutput;
+      const output = context.quote(amount);
+      evaluated.set(amount, output);
+      return output;
     } catch (error) {
       if (error instanceof Error && dust.test(error.message)) return 0n;
       if (error instanceof Error && capacity.test(error.message)) return null;
       throw error;
     }
   };
-  let low = 0n,
-    high = maxInput > 0n ? 1n : 0n;
-  while (high < maxInput) {
-    const output = evaluate(high);
-    if (output === null || output >= target) break;
-    low = high;
-    high = high * 2n > maxInput ? maxInput : high * 2n;
+  let hint: bigint | undefined;
+  try {
+    hint = maxInput > 0n ? context.inputForOutput(target) : undefined;
+  } catch {
+    // Exact-output SDKs can reject targets outside prepared liquidity. The forward
+    // path remains authoritative and propagates protocol/state errors as before.
+  }
+  let low = 0n;
+  let high =
+    hint === undefined
+      ? maxInput > 0n
+        ? 1n
+        : 0n
+      : hint < 1n
+        ? 1n
+        : hint > maxInput
+          ? maxInput
+          : hint;
+  let step = hint === undefined ? high : 1n;
+  const initial = evaluate(high);
+  if (initial === null || initial >= target) {
+    while (high > 0n) {
+      const probe = high > step ? high - step : 0n;
+      const output = evaluate(probe);
+      if (output !== null && output < target) {
+        low = probe + 1n;
+        break;
+      }
+      high = probe;
+      step *= 2n;
+    }
+  } else {
+    while (high < maxInput) {
+      low = high + 1n;
+      high = high + step > maxInput ? maxInput : high + step;
+      const output = evaluate(high);
+      if (output === null || output >= target) break;
+      step *= 2n;
+    }
+    if (
+      high === maxInput &&
+      evaluate(high) !== null &&
+      evaluate(high)! < target
+    )
+      low = high;
   }
   while (low < high) {
     const mid = (low + high) / 2n;

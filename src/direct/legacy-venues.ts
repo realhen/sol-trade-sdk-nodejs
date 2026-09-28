@@ -41,6 +41,7 @@ import {
   BaseFeeMode,
   getBaseFeeModeFromPodAlignedData,
   swapQuoteExactInput,
+  swapQuoteExactOutput,
   isSwapEnabled,
   SwapMode,
   type PoolState,
@@ -215,6 +216,7 @@ function required(
 /** A validated cached quote and instruction factory; amounts are atomic units, with no signing or RPC. */
 export interface VenueAdapter {
   quote(amount: bigint): bigint;
+  inputForOutput(amount: bigint): bigint | undefined;
   instructions(amount: bigint, minimum: bigint): TransactionInstruction[];
 }
 
@@ -315,6 +317,19 @@ export function venueAdapter(
       observationState: s.observationId,
     };
     return {
+      inputForOutput: (amount) =>
+        integer(
+          CurveCalculator.swapBaseOutput(
+            bn(amount),
+            bn(aIn ? reserveA : reserveB),
+            bn(aIn ? reserveB : reserveA),
+            config.tradeFeeRate,
+            s.enableCreatorFee ? config.creatorFeeRate : new BN(0),
+            config.protocolFeeRate,
+            config.fundFeeRate,
+            s.feeOn === 0 || s.feeOn === (aIn ? 1 : 2),
+          ).inputAmount,
+        ),
       quote: (amount) =>
         integer(
           CurveCalculator.swapBaseInput(
@@ -409,6 +424,18 @@ export function venueAdapter(
       pcReserve: reserveB,
     };
     return {
+      inputForOutput: (amount) => {
+        const reserveIn = aIn ? reserveA : reserveB;
+        const reserveOut = aIn ? reserveB : reserveA;
+        if (amount >= reserveOut) return undefined;
+        const net =
+          (reserveIn * amount + reserveOut - amount - 1n) /
+          (reserveOut - amount);
+        return (
+          (net * denominator + denominator - numerator - 1n) /
+          (denominator - numerator)
+        );
+      },
       quote: (amount) => {
         const net =
           amount - (amount * numerator + denominator - 1n) / denominator;
@@ -461,6 +488,13 @@ export function venueAdapter(
       slot: Number(slot),
     };
     return {
+      inputForOutput: (amount) =>
+        integer(
+          aIn
+            ? Curve.sellExactOut({ ...params, amountB: bn(amount) }).amountA
+                .amount
+            : Curve.buyExactOut({ ...params, amountA: bn(amount) }).amountB,
+        ),
       quote: (amount) => {
         if (aIn) {
           return integer(
@@ -548,6 +582,26 @@ export function venueAdapter(
     tokenBProgram: programB,
   };
   return {
+    inputForOutput: (amount) => {
+      if (
+        getBaseFeeModeFromPodAlignedData(
+          s.poolFees.baseFee.baseFeeInfo.data,
+        ) === BaseFeeMode.RateLimiter
+      )
+        return undefined;
+      return integer(
+        swapQuoteExactOutput(
+          s,
+          point,
+          bn(amount),
+          0,
+          aIn,
+          false,
+          decimalsA,
+          decimalsB,
+        ).includedFeeInputAmount,
+      );
+    },
     quote: (amount) =>
       integer(
         swapQuoteExactInput(

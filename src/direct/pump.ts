@@ -18,6 +18,7 @@ import {
   getBuyTokenAmountFromSolAmount,
   getSellSolAmountFromTokenAmount,
   creatorVaultPda,
+  computeFeesBps,
 } from "@pump-fun/pump-sdk";
 import {
   PUMP_AMM_SDK,
@@ -26,6 +27,8 @@ import {
   PUMP_AMM_FEE_CONFIG_PDA,
   buyQuoteInput,
   sellBaseInput,
+  computeFeesBps as computeSwapFeesBps,
+  buyBaseInput,
   POOL_ACCOUNT_NEW_SIZE,
   coinCreatorVaultAuthorityPda,
   getFeeRecipient,
@@ -35,6 +38,25 @@ import * as pumpfun from "../instruction/pumpfun_builder";
 import * as pumpswap from "../instruction/pumpswap";
 import { assert, account, type MarketSnapshot } from "./snapshot";
 const bn = (n: bigint) => new BN(n.toString());
+/** Inverts individually rounded Pump fees in quote atoms before inverting the curve.
+ * @remarks The aggregate-rate inverse is a lower bound. At most eight quote-atom
+ * corrections are attempted; unusual high-fee configurations use the forward fallback.
+ */
+function grossOutputForNet(
+  target: bigint,
+  fees: readonly bigint[],
+): bigint | undefined {
+  const total = fees.reduce((sum, fee) => sum + fee, 0n);
+  assert(total >= 0n && total < 10000n, "Invalid Pump fees");
+  let gross = (target * 10000n + 9999n - total) / (10000n - total);
+  for (let correction = 0; correction < 8; correction++, gross++) {
+    const net =
+      gross -
+      fees.reduce((sum, fee) => sum + (gross * fee + 9999n) / 10000n, 0n);
+    if (net >= target) return gross;
+  }
+  return undefined;
+}
 function owned(s: MarketSnapshot, k: PublicKey, p: PublicKey) {
   const a = account(s, k);
   assert(a && a.owner.equals(p) && !a.executable, "Invalid Pump account owner");
@@ -105,6 +127,36 @@ export function pumpAdapter(
       quoteMint: quote.equals(NATIVE_MINT) ? undefined : quote,
     };
     return {
+      inputForOutput: (amount: bigint): bigint | undefined => {
+        if (buy) return undefined;
+        const fees = computeFeesBps({
+          global: g,
+          feeConfig: f,
+          mintSupply: c.isMayhemMode
+            ? bn(mint.supply)
+            : new BN("1000000000000000"),
+          virtualQuoteReserves: c.virtualQuoteReserves,
+          virtualTokenReserves: c.virtualTokenReserves,
+          quoteMint: c.quoteMint,
+          creatorFeeBps: c.creatorFeeBps,
+        });
+        const gross = grossOutputForNet(amount, [
+          BigInt(fees.protocolFeeBps.toString()),
+          c.creator.equals(PublicKey.default)
+            ? 0n
+            : BigInt(fees.creatorFeeBps.toString()),
+        ]);
+        if (gross === undefined) return undefined;
+        const reserve = BigInt(c.virtualQuoteReserves.toString());
+        if (gross >= reserve) return undefined;
+        const denominator = reserve - gross;
+        return (
+          (BigInt(c.virtualTokenReserves.toString()) * gross +
+            denominator -
+            1n) /
+          denominator
+        );
+      },
       quote: (amount: bigint) => {
         const result = BigInt(
           (buy
@@ -220,7 +272,32 @@ export function pumpAdapter(
     feeRecipient: getFeeRecipient(globalConfig, p.isMayhemMode),
     buybackFeeRecipient: getBuybackFeeRecipient(globalConfig),
   };
+  let sellFeeRates: bigint[] | undefined;
   return {
+    inputForOutput: (amount: bigint): bigint | undefined => {
+      if (buy)
+        return BigInt(
+          buyBaseInput({ ...params, base: bn(amount) }).uiQuote.toString(),
+        );
+      if (!sellFeeRates) {
+        const fees = computeSwapFeesBps({
+          ...params,
+          baseMintSupply: bn(mint.supply),
+          quoteReserve: params.quoteReserve.add(p.virtualQuoteReserves),
+        });
+        sellFeeRates = [
+          BigInt(fees.lpFeeBps.toString()),
+          BigInt(fees.protocolFeeBps.toString()),
+          p.coinCreator.equals(PublicKey.default)
+            ? 0n
+            : BigInt(fees.creatorFeeBps.toString()),
+        ];
+      }
+      const gross = grossOutputForNet(amount, sellFeeRates);
+      const reserve = quoteReserve + BigInt(p.virtualQuoteReserves.toString());
+      if (gross === undefined || gross >= reserve) return undefined;
+      return (baseReserve * gross + reserve - gross - 1n) / (reserve - gross);
+    },
     quote: (amount: bigint) =>
       BigInt(
         (buy
