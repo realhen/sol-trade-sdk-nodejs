@@ -174,7 +174,18 @@ export function planDirectSellBatch(
       }
     }
     if (!omitted.size) break;
-    eligible = eligible.filter((wallet) => !omitted.has(wallet.id));
+    const remaining = eligible.filter(
+      (wallet) => wallet.balance > 0n && !omitted.has(wallet.id),
+    );
+    if (!remaining.length && eligible.length > 1) {
+      eligible = [
+        eligible.reduce((largest, wallet) =>
+          wallet.balance > largest.balance ? wallet : largest,
+        ),
+      ];
+    } else {
+      eligible = remaining;
+    }
     if (!eligible.length) break;
   }
   const inputAmount = allocations.reduce(

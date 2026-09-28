@@ -355,6 +355,17 @@ describe("shared sell batch planning with captured pools", () => {
           ).instructions.length,
         ).toBeGreaterThan(0);
       }
+      const tiny = planDirectSellBatch(
+        market,
+        1n,
+        [
+          { id: "a", balance: amount * 2n, weight: 1n },
+          { id: "b", balance: amount * 2n, weight: 1n },
+        ],
+        0,
+      );
+      expect(tiny.allocations.length).toBeGreaterThan(0);
+      expect(tiny.aggregateExpectedOutput).toBeGreaterThanOrEqual(1n);
       const all = planDirectSellBatch(
         market,
         target * 100n,
