@@ -1,3 +1,4 @@
+import { TRADING_PROGRAMS } from "../common/trading-programs";
 /** Pool-specific direct execution. No route service, signer, HTTP API or submission. */
 import {
   PublicKey,
@@ -24,7 +25,7 @@ import * as dlmm from "../venues/meteora-dlmm";
 import * as dbc from "../venues/meteora-dbc";
 import * as damm1 from "../venues/meteora-damm-v1";
 import { prepareTokenAccounts } from "../venues/token-accounts";
-import { additionalVenue, venueAccounts, venueAdapter } from "./legacy-venues";
+import { venueAccounts, venueAdapter } from "./legacy-venues";
 import { pumpAdapter, pumpDependencies } from "./pump";
 import { assert, type MarketSnapshot, type ChainAccount } from "./snapshot";
 import type { DirectSwapExpectation } from "./settlement";
@@ -81,15 +82,6 @@ const quotes = new WeakMap<
     amount: bigint;
   }
 >();
-const PROGRAMS: Record<string, string> = {
-  "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P": "Pump.fun",
-  pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA: "PumpSwap",
-  CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK: "Raydium CLMM",
-  whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc: "Orca Whirlpool",
-  LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo: "Meteora DLMM",
-  dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN: "Meteora DBC",
-  Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB: "Meteora DAMM v1",
-};
 const clone = (key: PublicKey) => new PublicKey(key.toBytes());
 const u64 = (n: bigint) => {
   assert(
@@ -110,7 +102,7 @@ export async function prepareDirectMarket(
   const quoteMint = await discoverPoolQuoteMint(connection, pool, targetMint);
   const info = await connection.getAccountInfo(pool);
   assert(info && !info.executable, "Pool unavailable");
-  const venue = PROGRAMS[info.owner.toBase58()] ?? additionalVenue(info.owner);
+  const venue = TRADING_PROGRAMS[info.owner.toBase58()];
   assert(venue, "Unsupported direct venue");
   const mintInfos = await connection.getMultipleAccountsInfo([
     targetMint,

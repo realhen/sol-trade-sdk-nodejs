@@ -16,7 +16,11 @@ import {
   buildDirectSwap,
   normalizeDirectFill,
 } from "../dist/direct/browser.mjs";
-import { buildSwapTransaction } from "../dist/browser.mjs";
+import {
+  buildSwapTransaction,
+  readTradingPriorityObservation,
+  readPriorityObservation,
+} from "../dist/browser.mjs";
 const endpoint = new URL(
   process.env.SURFPOOL_RPC_URL ?? "http://127.0.0.1:8999",
 );
@@ -64,7 +68,11 @@ await rpc("surfnet_setAccount", [
   owner.publicKey.toBase58(),
   { lamports: 2_000_000_000 },
 ]);
-async function send(instructions, computeUnitLimit = 50_000) {
+async function send(
+  instructions,
+  computeUnitLimit = 50_000,
+  priorityFeeLamports = 0n,
+) {
   const block = await connection.getLatestBlockhash();
   const tx = buildSwapTransaction({
     version: 1,
@@ -73,6 +81,7 @@ async function send(instructions, computeUnitLimit = 50_000) {
     recentBlockhash: block.blockhash,
     computeUnitLimit,
     computeUnitPriceMicroLamports: 0n,
+    priorityFeeLamports,
   });
   tx.sign([owner]);
   const wire = Buffer.from(tx.serialize()).toString("base64");
@@ -147,7 +156,16 @@ for (const fixture of fixtures) {
   ]);
   const quote = quoteDirectSwap(market, market.quoteMint, 100_000n, 100);
   const buy = await buildDirectSwap(market, quote, owner.publicKey);
-  const bought = await send(buy.instructions, buy.computeUnitLimit);
+  const bought = await send(buy.instructions, buy.computeUnitLimit, 100_000n);
+  const buyBid = readTradingPriorityObservation(bought.receipt);
+  assert(buyBid, "Real jsonParsed v1 receipt must decode as program activity");
+  assert.deepEqual(buyBid.venues, [fixture.venue]);
+  assert.equal(buyBid.priorityLamports, 100_000n);
+  assert.equal(buyBid.computeUnitLimit, buy.computeUnitLimit);
+  assert.equal(
+    readPriorityObservation(bought.receipt, fixture.pool)?.priorityLamports,
+    100_000n,
+  );
   if (process.env.DIRECT_TEST_OUTPUT_DIR) {
     await mkdir(process.env.DIRECT_TEST_OUTPUT_DIR, { recursive: true });
     await writeFile(
@@ -161,7 +179,11 @@ for (const fixture of fixtures) {
   market = await prepareDirectMarket(connection, pool, mint);
   const sellQuote = quoteDirectSwap(market, mint, buyFill.outputAmount, 100);
   const sell = await buildDirectSwap(market, sellQuote, owner.publicKey);
-  const sold = await send(sell.instructions, sell.computeUnitLimit);
+  const sold = await send(sell.instructions, sell.computeUnitLimit, 80_000n);
+  assert.equal(
+    readTradingPriorityObservation(sold.receipt)?.priorityLamports,
+    80_000n,
+  );
   if (process.env.DIRECT_TEST_OUTPUT_DIR) {
     await mkdir(process.env.DIRECT_TEST_OUTPUT_DIR, { recursive: true });
     await writeFile(
