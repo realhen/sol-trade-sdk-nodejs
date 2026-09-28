@@ -111,6 +111,12 @@ interface ParsedInstruction {
 }
 function parsed(ix: ObjectValue): ParsedInstruction | null {
   if (ix.parsed === undefined) return null;
+  if (
+    typeof ix.parsed === "string" &&
+    (ix.programId === "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr" ||
+      ix.programId === "Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo")
+  )
+    return null;
   const p = object(ix.parsed, "parsed instruction");
   if (typeof p.type !== "string") fail("invalid parsed instruction type");
   return { type: p.type, info: object(p.info, "parsed instruction info") };

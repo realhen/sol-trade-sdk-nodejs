@@ -723,10 +723,10 @@ describe("caller-signed browser HTTP submission workflow", () => {
 });
 
 describe("v1 browser submission workflow", () => {
-  it("sends distinct same-wallet intents under one blockhash without changing swap amounts or fees", async () => {
+  it("retransmits identical swaps without adding a uniqueness memo", async () => {
     const endpoint = await localEndpoint("accept", 3);
     const routes = makeRoutes(endpoint.url).slice(0, 1);
-    const build = (transactionId: string) =>
+    const build = () =>
       buildSwapTransaction({
         version: 1,
         payer: payer.publicKey,
@@ -734,18 +734,17 @@ describe("v1 browser submission workflow", () => {
         recentBlockhash: nonceHash,
         computeUnitLimit: 200_000,
         computeUnitPriceMicroLamports: 50n,
-        transactionId,
       });
     const signatures = new Set<string>();
     const dispatches: ReturnType<typeof prepareSignedTransactionSubmission>[] =
       [];
-    for (const transactionId of ["intent-1", "intent-2", "intent-3"]) {
-      const base = build(transactionId);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const base = build();
       expect(Buffer.from(base.serialize())).toEqual(
-        Buffer.from(build(transactionId).serialize()),
+        Buffer.from(build().serialize()),
       );
       const decoded = decompileV1Transaction(base);
-      expect(decoded.instructions.at(-1)!.data.toString()).toBe(transactionId);
+      expect(decoded.instructions).toHaveLength(core.length);
       expect(decoded.instructions[0]!.data).toEqual(core[0]!.data);
       const variants = prepareTransactionVariants(base, [], routes);
       variants[0]!.transaction.sign([payer]);
@@ -759,10 +758,8 @@ describe("v1 browser submission workflow", () => {
     }
     const results = await Promise.all(dispatches.map((dispatch) => dispatch()));
     expect(results.flat().every((result) => result.accepted)).toBe(true);
-    expect(signatures.size).toBe(3);
+    expect(signatures.size).toBe(1);
     expect(endpoint.received).toHaveLength(3);
-    expect(() => build("")).toThrow("Transaction ID");
-    expect(() => build("x".repeat(129))).toThrow("Transaction ID");
     const withNonce = buildSwapTransaction({
       version: 1,
       payer: payer.publicKey,
@@ -770,7 +767,6 @@ describe("v1 browser submission workflow", () => {
       recentBlockhash: nonceHash,
       computeUnitLimit: 200_000,
       computeUnitPriceMicroLamports: 50n,
-      transactionId: "nonce-intent",
       durableNonce: { nonceAccount, authority: payer.publicKey, nonceHash },
     });
     expect(
