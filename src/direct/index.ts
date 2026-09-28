@@ -552,7 +552,7 @@ export async function buildDirectSwap(
 }
 
 export {
-  planDirectSellBatch,
-  type DirectSellBatch,
-  type SellBatchWallet,
-} from "./batch-sell";
+  sizeDirectSellForExpectedOutput,
+  tryQuoteDirectSell,
+  type DirectSellSizing,
+} from "./sell-sizing";

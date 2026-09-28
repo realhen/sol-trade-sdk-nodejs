@@ -684,6 +684,17 @@ to the exact prepared market. `sizeDirectSellForQuoteValue(market, targetAmount,
 maximumInputAmount, slippageBps)` finds a token-input quote whose protected output
 reaches the requested quote-token value using bounded local integer search.
 
+For expected-proceeds sizing, use `sizeDirectSellForExpectedOutput(market,
+target, maxInput)`, then quote and build the returned token amount. This helper
+uses the pool curve and a caller-provided input bound; slippage is applied to the
+subsequent quote. `tryQuoteDirectSell(market, inputAmount, slippageBps)` returns a
+sealed explicit-input quote, or null for unexecutable dust.
+
+Version 0.12.0 removes `planDirectSellBatch`, `DirectSellBatch` and
+`SellBatchWallet`. Wallet selection, weights, balance caps, redistribution,
+sell-all policy and dust consolidation belong in the calling application.
+The SDK does not accept a wallet batch or produce per-wallet allocations.
+
 Non-native swaps spend an already funded input-token ATA and return the pool's
 other token. The SDK does not convert SOL to fund a non-SOL quote. Native SOL
 endpoints use wrapping/cleanup where the venue requires WSOL; Pump native curves
