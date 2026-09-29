@@ -596,3 +596,5 @@ export {
   tryQuoteDirectSell,
   type DirectSellSizing,
 } from "./sell-sizing";
+
+export { createDirectBuySizer } from "./buy-sizing";
