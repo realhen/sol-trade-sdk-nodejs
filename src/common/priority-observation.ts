@@ -1,5 +1,9 @@
 import { TRADING_PROGRAMS } from "./trading-programs";
 import bs58 from "bs58";
+import {
+  HTTP_SENDER_PROVIDERS,
+  httpSenderTipAccounts,
+} from "../swqos/http-settings";
 import { Buffer } from "buffer";
 
 /** Normalized landed bid, never divided by actual compute consumed. */
@@ -10,6 +14,8 @@ export interface PriorityObservation {
   computeUnitsConsumed: number;
   priorityLamports: bigint;
   microLamportsPerCu: bigint;
+  /** Successful top-level signer-funded transfers to SDK-known provider tip accounts, in lamports. */
+  providerTips?: Record<string, bigint>;
 }
 
 /** Decode an RPC jsonParsed transaction, requiring a successful write to the selected pool.
@@ -109,10 +115,42 @@ function decodePriorityObservation(
       computeUnitLimit: limit,
       computeUnitsConsumed: consumed,
       priorityLamports: fee,
+      providerTips: readProviderTips(message),
       microLamportsPerCu:
         (fee * 1_000_000n + BigInt(limit) - 1n) / BigInt(limit),
     };
   } catch {
     return;
   }
+}
+
+/** Counts only parsed native transfers authorized by transaction signers to known tip recipients. */
+function readProviderTips(message: any): Record<string, bigint> {
+  const tips: Record<string, bigint> = {};
+  const signers = new Set<string>(
+    message.accountKeys
+      .filter((key: any) => key.signer === true)
+      .map((key: any) => key.pubkey),
+  );
+  for (const instruction of message.instructions) {
+    const parsed = instruction.parsed;
+    if (
+      instruction.programId !== "11111111111111111111111111111111" ||
+      parsed?.type !== "transfer"
+    )
+      continue;
+    const info = parsed.info;
+    if (
+      !signers.has(info?.source) ||
+      !Number.isSafeInteger(info?.lamports) ||
+      info.lamports <= 0
+    )
+      continue;
+    for (const provider of HTTP_SENDER_PROVIDERS) {
+      if (httpSenderTipAccounts(provider).includes(info.destination)) {
+        tips[provider] = (tips[provider] ?? 0n) + BigInt(info.lamports);
+      }
+    }
+  }
+  return tips;
 }
