@@ -232,3 +232,48 @@ for (const [index, entrypoint] of [...nodeSdks, sdk].entries()) {
     `Direct ${["ESM", "CJS", "browser CSP"][index]}: eleven venue quote/build workflows, invalid-state preparation and buy-capacity/sell control passed`,
   );
 }
+
+// Public native-SOL transactions exercise the distributed settlement path, including ATA rent.
+const pumpReceipts = JSON.parse(
+  await readFile("src/direct/__tests__/fixtures/mainnet-pump-ata.json", "utf8"),
+);
+for (const entrypoint of [...nodeSdks, sdk]) {
+  for (const { transaction, receipt, expectedSolLamports } of pumpReceipts) {
+    const fill = entrypoint.normalizeDirectFill(transaction, receipt.route);
+    const buy = receipt.route.side === "buy";
+    assert.equal(
+      String(buy ? fill.inputAmount : fill.outputAmount),
+      expectedSolLamports,
+    );
+    assert.equal(
+      String(buy ? fill.outputAmount : fill.inputAmount),
+      "71373144979",
+    );
+    for (const field of [
+      "account",
+      "mint",
+      "wallet",
+      "source",
+      "tokenProgram",
+      "systemProgram",
+    ]) {
+      const invalid = structuredClone(transaction);
+      invalid.transaction.message.instructions[0].parsed.info[field] =
+        receipt.pool;
+      assert.throws(
+        () => entrypoint.normalizeDirectFill(invalid, receipt.route),
+        undefined,
+        field,
+      );
+    }
+    const spoofed = structuredClone(transaction);
+    spoofed.transaction.message.instructions[0].programId = receipt.pool;
+    assert.throws(() => entrypoint.normalizeDirectFill(spoofed, receipt.route));
+    const unknown = structuredClone(transaction);
+    unknown.transaction.message.instructions[0].parsed.type = "unrecognized";
+    assert.throws(() => entrypoint.normalizeDirectFill(unknown, receipt.route));
+  }
+}
+console.log(
+  "Direct ESM/CJS/browser CSP: public Pump buy/sell settlement and malformed ATA rejection passed",
+);
