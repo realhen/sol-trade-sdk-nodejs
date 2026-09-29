@@ -358,6 +358,27 @@ export function normalizeDirectFill(
           );
           return (incoming ? value : 0n) - (outgoing ? value : 0n);
         }
+        if (
+          !within &&
+          ix.programId === ATA_PROGRAM &&
+          ["create", "createIdempotent"].includes(p.type)
+        ) {
+          if (
+            info.source !== owner ||
+            info.wallet !== owner ||
+            info.systemProgram !== SYSTEM ||
+            ![input, output].some(
+              (endpoint) =>
+                !endpoint.system &&
+                info.account === endpoint.ata &&
+                info.mint === endpoint.mint &&
+                info.tokenProgram === endpoint.program,
+            )
+          )
+            fail("unproven native account setup outside swap");
+          // The wrapper names its payer; its inner System instruction accounts for rent.
+          return 0n;
+        }
         if (p.type === "closeAccount" && info.destination === owner)
           fail("unproven native account closure");
         if (!within && (info.destination === owner || info.source === owner))
