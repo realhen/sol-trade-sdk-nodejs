@@ -11,6 +11,7 @@ const names = [
   "prepareDirectMarket",
   "discoverPoolQuoteMint",
   "quoteDirectSwap",
+  "createDirectBuySizer",
   "sizeDirectSellForQuoteValue",
   "buildDirectSwap",
   "normalizeDirectFill",
@@ -125,6 +126,37 @@ for (const [index, entrypoint] of [...nodeSdks, sdk].entries()) {
       new PublicKey(fixture.mint),
     );
     recorded.warm();
+    const savedBuy = fixture.quotes.find(
+      (value) => value.input !== fixture.mint,
+    );
+    const buyAmount = BigInt(savedBuy.amount);
+    const sizer = entrypoint.createDirectBuySizer(market, 100);
+    const uncapped = sizer.capacity(buyAmount, (1n << 64n) - 1n);
+    assert.equal(uncapped, buyAmount);
+    const full = sizer.quote(uncapped);
+    assert.equal(full.expectedOutput, BigInt(savedBuy.output));
+    assert.equal(
+      sizer.quote(uncapped),
+      full,
+      "Same-snapshot quotes are reused",
+    );
+    const ceiling = full.expectedOutput / 2n;
+    const capped = sizer.capacity(buyAmount, ceiling);
+    assert(capped < buyAmount);
+    if (capped > 0n) {
+      const limited = sizer.quote(capped);
+      assert(limited && limited.expectedOutput <= ceiling);
+      assert(
+        entrypoint.quoteDirectSwap(market, market.quoteMint, capped + 1n, 100)
+          .expectedOutput > ceiling,
+      );
+      assert(
+        (await entrypoint.buildDirectSwap(market, limited, owner)).instructions
+          .length > 0,
+      );
+    }
+    assert.equal(sizer.capacity(0n, ceiling), 0n);
+    assert.equal(sizer.capacity(buyAmount, 0n), 0n);
     for (const saved of fixture.quotes) {
       const quote = entrypoint.quoteDirectSwap(
         market,
