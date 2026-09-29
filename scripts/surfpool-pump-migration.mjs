@@ -3,6 +3,10 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { Connection, Keypair, ComputeBudgetProgram } from "@solana/web3.js";
 import { NATIVE_MINT, TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
+import {
+  inspectDirectMigration,
+  prepareDirectMarket,
+} from "../dist/direct/index.mjs";
 import { compileV1Transaction } from "../dist/browser.mjs";
 const require = createRequire(import.meta.url);
 const {
@@ -181,6 +185,14 @@ export async function createPumpMigrationFixture(
       (await online.fetchBondingCurve(mint)).complete,
       "Real buy must complete curve",
     );
+    assert.equal(
+      (await inspectDirectMigration(connection, source, mint)).state,
+      "migrating",
+    );
+    await assert.rejects(
+      prepareDirectMarket(connection, source, mint),
+      /completed|complete|migrated/i,
+    );
     return signatures.graduation;
   }
   async function migrate() {
@@ -205,6 +217,11 @@ export async function createPumpMigrationFixture(
       await connection.getAccountInfo(destination),
       "Migration must create destination pool",
     );
+    const handoff = await inspectDirectMigration(connection, source, mint);
+    assert.equal(handoff.state, "migrated");
+    assert(handoff.destination.equals(destination));
+    const market = await prepareDirectMarket(connection, destination, mint);
+    assert(market.pool.equals(destination));
     return signatures.migration;
   }
   return {
