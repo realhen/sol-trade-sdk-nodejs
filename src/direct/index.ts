@@ -93,9 +93,12 @@ const u64 = (n: bigint) => {
     "Amount must be a positive u64",
   );
 };
-/** All dependency reads go through the supplied Connection. A recording/cache-only
- * implementation may hydrate once and rebuild prepared snapshots on account updates.
- * Returned state is opaque; quote/build have no access to the supplied Connection. */
+/** Prepares a validated market from dependency reads through the supplied Connection.
+ * @remarks A recording/cache-only connection may hydrate once and rebuild snapshots
+ * on account updates. Preparation rejects market-wide disabled or unsupported states;
+ * amount-dependent capacity and liquidity checks still occur when quoting. Returned
+ * state is opaque, and quote/build have no access to the supplied Connection.
+ */
 export async function prepareDirectMarket(
   connection: Connection,
   pool: PublicKey,
@@ -318,6 +321,8 @@ export async function prepareDirectMarket(
       }
       return value;
     };
+    quoteAdapter(targetMint);
+    quoteAdapter(quoteMint);
     const clock = accounts.get("SysvarC1ock11111111111111111111111111111111");
     const epoch = clock?.data.readBigUInt64LE(16) ?? 0n;
     const fees = tokens.map(getTransferFeeConfig);
