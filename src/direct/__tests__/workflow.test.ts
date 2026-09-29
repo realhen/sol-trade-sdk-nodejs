@@ -241,14 +241,13 @@ it("binds the current Pump buyback recipient and rejects a changed quote mint sn
     }
     return a;
   };
-  const wrong = await prepareDirectMarket(
-    changed.connection,
-    new PublicKey(f.pool),
-    new PublicKey(f.mint),
-  );
-  expect(() =>
-    quoteDirectSwap(wrong, wrong.quoteMint, 1_000_000n, 100),
-  ).toThrow("changed during preparation");
+  await expect(
+    prepareDirectMarket(
+      changed.connection,
+      new PublicKey(f.pool),
+      new PublicKey(f.mint),
+    ),
+  ).rejects.toThrow("changed during preparation");
 });
 
 for (const f of fixtures)
