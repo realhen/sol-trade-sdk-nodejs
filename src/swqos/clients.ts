@@ -90,8 +90,36 @@ import { MIN_TIP_JITO, MIN_TIP_BLOXROUTE, MIN_TIP_ZERO_SLOT, MIN_TIP_TEMPORAL, M
 
 /** HTTP boundary time in epoch milliseconds, using the monotonic performance clock. */
 export interface HttpSendTimingEvent {
-  phase: 'dispatch' | 'response' | 'error';
+  phase: 'dispatch' | 'response' | 'body' | 'error';
   at: number;
+  /** Elapsed monotonic milliseconds since this request's fetch dispatch. */
+  durationMs?: number;
+  httpStatus?: number;
+  rpcErrorCode?: number;
+  requestBytes?: number;
+  responseKind?: 'json' | 'text';
+  providerSuccess?: boolean;
+  /** Fixed classification only; never provider-controlled text, URLs or credentials. */
+  reason?: 'timeout' | 'aborted' | 'network_error' | 'body_read_failed' | 'http_error' |
+    'unauthorized' | 'rate_limited' | 'insufficient_tip' | 'rpc_error' | 'provider_rejected';
+}
+
+/** Classifies an untrusted response without retaining its text or arbitrary fields. */
+function responseDiagnostic(body: unknown): Pick<HttpSendTimingEvent, 'rpcErrorCode' | 'reason' | 'providerSuccess'> {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return {};
+  const envelope = body as Record<string, any>;
+  const success = typeof envelope.success === 'boolean' ? { providerSuccess: envelope.success } : {};
+  if (!envelope.error && envelope.success !== false) return success;
+  const code = envelope.error?.code;
+  const message = typeof envelope.error?.message === 'string' ? envelope.error.message : '';
+  const reason: HttpSendTimingEvent['reason'] = /rate.?limit|too many requests/i.test(message)
+    ? 'rate_limited'
+    : /unauthori[sz]ed|forbidden|invalid.{0,20}(api.?key|token)/i.test(message)
+      ? 'unauthorized'
+      : /tip.{0,40}(minimum|low|small)|minimum.{0,40}tip/i.test(message)
+        ? 'insufficient_tip'
+        : envelope.error ? 'rpc_error' : 'provider_rejected';
+  return { ...success, ...(Number.isSafeInteger(code) ? { rpcErrorCode: code } : {}), reason };
 }
 
 /** Options are local to one submission and never mutate the client. */
@@ -102,7 +130,8 @@ export interface HttpSendOptions {
   signal?: AbortSignal;
   /** Synchronous diagnostic observer; keep it lightweight. Exceptions are ignored.
    * Response means HTTP headers arrived, not that the provider accepted the transaction.
-   * Error means fetch failed; response parsing and provider rejections are not transport errors.
+   * Body means the response was read; error includes fetch or body-read failure.
+   * Only fixed classifications and numeric status codes are exposed; response text is excluded.
    */
   onTiming?: (event: HttpSendTimingEvent) => void;
 }
@@ -205,25 +234,46 @@ abstract class BaseClient implements SwqosClient {
         referrerPolicy: 'no-referrer' as const,
         cache: 'no-store' as const,
       };
-      const notify = (phase: HttpSendTimingEvent['phase']) => {
+      let startedAt = performance.timeOrigin + performance.now();
+      const requestBytes = typeof body === 'string' ? Buffer.byteLength(body) : body.byteLength;
+      const notify = (phase: HttpSendTimingEvent['phase'], detail: Partial<HttpSendTimingEvent> = {}) => {
         if (!options.onTiming) return;
         try {
-          options.onTiming({ phase, at: performance.timeOrigin + performance.now() });
+          const at = performance.timeOrigin + performance.now();
+          if (phase === 'dispatch') startedAt = at;
+          options.onTiming({ ...detail, phase, at, durationMs: at - startedAt });
         } catch {
           // Diagnostics must never change submission behavior or trigger retries.
         }
       };
       let response: Response;
-      notify('dispatch');
+      notify('dispatch', { requestBytes });
       try {
         response = await fetch(url, request);
       } catch (error) {
-        notify('error');
+        notify('error', { reason: controller.signal.aborted ? (options.signal?.aborted ? 'aborted' : 'timeout') : 'network_error' });
         throw error;
       }
-      notify('response');
+      notify('response', {
+        httpStatus: response.status,
+        ...(!response.ok ? { reason: response.status === 429 ? 'rate_limited' as const :
+          response.status === 401 || response.status === 403 ? 'unauthorized' as const : 'http_error' as const } : {}),
+      });
       if (!response.ok) throw new TradeError(response.status, `HTTP error: ${response.statusText}`);
-      return await parseBodyAsJsonOrText(response);
+      let parsed: unknown;
+      try {
+        parsed = await parseBodyAsJsonOrText(response);
+      } catch (error) {
+        notify('error', { httpStatus: response.status, reason: controller.signal.aborted ?
+          (options.signal?.aborted ? 'aborted' : 'timeout') : 'body_read_failed' });
+        throw error;
+      }
+      notify('body', {
+        httpStatus: response.status,
+        responseKind: typeof parsed === 'string' ? 'text' : 'json',
+        ...responseDiagnostic(parsed),
+      });
+      return parsed;
     } finally {
       clearTimeout(timer);
       options.signal?.removeEventListener('abort', abort);

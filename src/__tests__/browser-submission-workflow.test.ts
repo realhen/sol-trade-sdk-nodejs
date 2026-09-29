@@ -397,7 +397,7 @@ describe("caller-signed browser HTTP submission workflow", () => {
       );
       const readText = response.text.bind(response);
       vi.spyOn(response, "text").mockImplementation(() => {
-        order.push(`${routeId}:body`);
+        order.push(`${routeId}:read-body`);
         return readText();
       });
       return response;
@@ -422,14 +422,16 @@ describe("caller-signed browser HTTP submission workflow", () => {
           `${route.id}:dispatch`,
           `${route.id}:fetch`,
           `${route.id}:response`,
+          `${route.id}:read-body`,
           `${route.id}:body`,
           `${route.id}:accepted`,
         ],
       );
     }
-    expect(events).toHaveLength(6);
+    expect(events).toHaveLength(8);
     for (const event of events) {
-      expect(Object.keys(event).sort()).toEqual(["at", "phase", "routeId"]);
+      expect(event).toHaveProperty("signature");
+      expect(event).toHaveProperty("durationMs");
       expect(event.at).toBeGreaterThanOrEqual(before);
       expect(event.at).toBeLessThanOrEqual(after);
     }
@@ -484,6 +486,7 @@ describe("caller-signed browser HTTP submission workflow", () => {
       expect(phases).toEqual([
         "dispatch",
         mode === "transport-error" ? "error" : "response",
+        ...(mode === "parse-error" ? ["error"] : mode === "accept" || mode === "mismatch" ? ["body"] : []),
         mode === "accept" ? "accepted" : "rejected",
       ]);
       expect(fetch).toHaveBeenCalledTimes(1);
