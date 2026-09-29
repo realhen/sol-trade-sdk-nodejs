@@ -77,6 +77,7 @@ function direction(
     throw new Error("Mint pair does not match DBC pool");
   if (
     p.virtualPool.poolState.isMigrated ||
+    p.virtualPool.poolState.migrationProgress ||
     p.virtualPool.poolState.quoteReserve.gte(p.config.migrationQuoteThreshold)
   )
     throw new Error("DBC pool has completed or migrated");
@@ -98,6 +99,12 @@ export async function prepare(
   if (!virtualPool) throw new Error("DBC pool not found");
   const config = await client.state.getPoolConfig(virtualPool.poolState.config);
   if (!config) throw new Error("DBC config not found");
+  if (
+    virtualPool.poolState.isMigrated ||
+    virtualPool.poolState.migrationProgress ||
+    virtualPool.poolState.quoteReserve.gte(config.migrationQuoteThreshold)
+  )
+    throw new Error("DBC pool has completed or migrated");
   const baseMint = virtualPool.poolState.baseMint;
   const quoteMint = config.quoteMint;
   const infos = await connection.getMultipleAccountsInfo(
