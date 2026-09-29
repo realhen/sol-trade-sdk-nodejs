@@ -3,6 +3,7 @@
  */
 import { Buffer } from "buffer";
 import { type AccountInfo, type Connection, PublicKey } from "@solana/web3.js";
+import { PUMP_AMM_SDK } from "@pump-fun/pump-swap-sdk";
 import { NATIVE_MINT } from "@solana/spl-token";
 import {
   PUMPFUN_PROGRAM_ID,
@@ -11,7 +12,6 @@ import {
 import {
   PUMPSWAP_PROGRAM,
   PUMPSWAP_POOL_DISCRIMINATOR,
-  decodePool,
 } from "../instruction/pumpswap";
 import {
   BONK_PROGRAM_ID,
@@ -140,12 +140,8 @@ export async function discoverPoolQuoteMint(
     b = encodedQuote.equals(PublicKey.default) ? NATIVE_MINT : encodedQuote;
   } else if (info.owner.equals(PUMPSWAP_PROGRAM)) {
     discriminator(data, PUMPSWAP_POOL_DISCRIMINATOR);
-    check(
-      [252, 261, 270, 300, 301, 643].includes(data.length),
-      "unsupported PumpSwap account length",
-    );
-    const state = decodePool(data.subarray(8));
-    check(state, "invalid PumpSwap pool");
+    check(data.length >= 252, "truncated PumpSwap account");
+    const state = PUMP_AMM_SDK.decodePool(info);
     a = state.baseMint;
     b = state.quoteMint;
   } else if (info.owner.equals(BONK_PROGRAM_ID)) {

@@ -9,6 +9,8 @@ import { build } from "esbuild";
 const require = createRequire(import.meta.url);
 const names = [
   "prepareDirectMarket",
+  "inspectDirectMigration",
+  "resolveDirectMigration",
   "discoverPoolQuoteMint",
   "quoteDirectSwap",
   "createDirectBuySizer",

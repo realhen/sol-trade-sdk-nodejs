@@ -1,3 +1,9 @@
+export {
+  inspectDirectMigration,
+  resolveDirectMigration,
+  type DirectMigration,
+  type ResolvedDirectMigration,
+} from "./migration";
 import { TRADING_PROGRAMS } from "../common/trading-programs";
 /** Pool-specific direct execution. No route service, signer, HTTP API or submission. */
 import {
