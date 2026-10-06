@@ -13,6 +13,7 @@ import {
   getAssociatedTokenAddressSync,
 } from "@solana/spl-token";
 import { BorshAccountsCoder } from "@coral-xyz/anchor";
+import BN from "bn.js";
 import { createPumpMigrationFixture } from "./surfpool-pump-migration.mjs";
 import * as sdk from "../dist/direct/index.mjs";
 import { compileTransaction, compileV1Transaction } from "../dist/browser.mjs";
@@ -22,6 +23,9 @@ const {
   pumpIdl,
   canonicalPumpPoolPda,
   bondingCurvePda,
+  GLOBAL_PDA,
+  PUMP_FEE_CONFIG_PDA,
+  getBuySolAmountFromTokenAmount,
 } = require("@pump-fun/pump-sdk");
 const fixture = await createPumpMigrationFixture();
 const { connection, source, mint } = fixture;
@@ -493,6 +497,146 @@ await sdk.prepareDirectMarket(
   classicPlan.destination,
   classic.mint,
 );
+const boundaryFixture = await createPumpMigrationFixture();
+const boundaryMarket = await sdk.prepareDirectMarket(
+  boundaryFixture.connection,
+  boundaryFixture.source,
+  boundaryFixture.mint,
+);
+const boundaryCurve = PUMP_SDK.decodeBondingCurve(
+  await boundaryFixture.connection.getAccountInfo(boundaryFixture.source),
+);
+const boundaryGlobal = PUMP_SDK.decodeGlobal(
+  await boundaryFixture.connection.getAccountInfo(GLOBAL_PDA),
+);
+const boundaryFees = PUMP_SDK.decodeFeeConfig(
+  await boundaryFixture.connection.getAccountInfo(PUMP_FEE_CONFIG_PDA),
+);
+const officialInput = (curve, tokens, raw = false) =>
+  BigInt(
+    getBuySolAmountFromTokenAmount({
+      global: raw
+        ? {
+            ...boundaryGlobal,
+            feeBasisPoints: new BN(0),
+            creatorFeeBasisPoints: new BN(0),
+          }
+        : boundaryGlobal,
+      feeConfig: raw ? null : boundaryFees,
+      mintSupply: curve.tokenTotalSupply,
+      bondingCurve: raw
+        ? { ...curve, creator: PublicKey.default, creatorFeeBps: new BN(0) }
+        : curve,
+      amount: new BN(tokens.toString()),
+      quoteMint: NATIVE_MINT,
+    }).toString(),
+  );
+let plateauLow = 0n,
+  plateauHigh = BigInt(boundaryCurve.realTokenReserves.toString());
+while (plateauLow < plateauHigh) {
+  const middle = (plateauLow + plateauHigh + 1n) / 2n;
+  if (officialInput(boundaryCurve, middle, true) <= 100_000_000n)
+    plateauLow = middle;
+  else plateauHigh = middle - 1n;
+}
+const plateau = plateauLow,
+  maximum = plateau + 1n;
+const rawInput = officialInput(boundaryCurve, plateau, true);
+assert(officialInput(boundaryCurve, maximum, true) > rawInput);
+const afterPlateau = {
+  ...boundaryCurve,
+  virtualTokenReserves: boundaryCurve.virtualTokenReserves.sub(
+    new BN(plateau.toString()),
+  ),
+  realTokenReserves: boundaryCurve.realTokenReserves.sub(
+    new BN(plateau.toString()),
+  ),
+  virtualQuoteReserves: boundaryCurve.virtualQuoteReserves.add(
+    new BN(rawInput.toString()),
+  ),
+  realQuoteReserves: boundaryCurve.realQuoteReserves.add(
+    new BN(rawInput.toString()),
+  ),
+};
+const finalBuyer = Keypair.generate();
+await boundaryFixture.connection.requestAirdrop(
+  finalBuyer.publicKey,
+  100_000_000_000,
+);
+const boundaryWallets = [
+  {
+    id: "reserve-boundary",
+    owner: boundaryFixture.owner.publicKey,
+    maximumTokenAmount: maximum,
+    maximumInputAmount: officialInput(boundaryCurve, maximum),
+  },
+  {
+    id: "reserve-suffix",
+    owner: finalBuyer.publicKey,
+    maximumTokenAmount: BigInt(boundaryCurve.realTokenReserves.toString()),
+    maximumInputAmount: officialInput(
+      afterPlateau,
+      BigInt(afterPlateau.realTokenReserves.toString()),
+    ),
+  },
+];
+const boundaryPlan = sdk.planDirectCurveCompletion(boundaryMarket, {
+  wallets: boundaryWallets,
+  maxWalletCount: 2,
+  slippageBps: 0,
+});
+assert.equal(boundaryPlan.allocations.length, 2);
+assert.equal(boundaryPlan.allocations[0].tokenAmount, plateau);
+for (const [index, allocation] of boundaryPlan.allocations.entries()) {
+  assert(
+    allocation.maximumInputAmount <= boundaryWallets[index].maximumInputAmount,
+  );
+  const built = await sdk.buildDirectCurveCompletionBuy(
+    boundaryMarket,
+    boundaryPlan,
+    index,
+  );
+  const signer = index === 0 ? boundaryFixture.owner : finalBuyer;
+  const signature = await boundaryFixture.sendInstructions(
+    `sdk-boundary-buy-${index}`,
+    built.instructions,
+    [signer],
+    built.computeUnitLimit,
+  );
+  const fill = sdk.normalizeDirectFill(
+    await receipt(signature),
+    built.expectation,
+  );
+  assert.equal(fill.inputAmount, allocation.expectedInputAmount);
+  assert.equal(fill.outputAmount, allocation.tokenAmount);
+}
+assert(
+  PUMP_SDK.decodeBondingCurve(
+    await boundaryFixture.connection.getAccountInfo(boundaryFixture.source),
+  ).complete,
+);
+const boundaryMigration = await sdk.buildDirectCurveCompletionMigration(
+  boundaryMarket,
+  boundaryPlan,
+  finalBuyer.publicKey,
+);
+await boundaryFixture.sendInstructions(
+  "sdk-boundary-migrate",
+  boundaryMigration.instructions,
+  [finalBuyer],
+  boundaryMigration.computeUnitLimit,
+);
+const boundaryHandoff = await sdk.inspectDirectMigration(
+  boundaryFixture.connection,
+  boundaryFixture.source,
+  boundaryFixture.mint,
+);
+assert.equal(boundaryHandoff.state, "migrated");
+await sdk.prepareDirectMarket(
+  boundaryFixture.connection,
+  boundaryPlan.destination,
+  boundaryFixture.mint,
+);
 console.log(
   JSON.stringify(
     {
@@ -508,6 +652,12 @@ console.log(
         mint: classic.mint.toBase58(),
         destination: classicPlan.destination.toBase58(),
         receipts: classic.receipts,
+      },
+      reserveBoundary: {
+        mint: boundaryFixture.mint.toBase58(),
+        maximumTokenAmount: maximum.toString(),
+        selectedTokenAmount: plateau.toString(),
+        receipts: boundaryFixture.receipts,
       },
       receipts: fixture.receipts,
     },

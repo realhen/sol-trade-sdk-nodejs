@@ -187,6 +187,7 @@ function quote(
   amount(input, true);
   return {
     input,
+    reserveInput: atoms(reserveInput),
     next: {
       ...curve,
       virtualTokenReserves: curve.virtualTokenReserves.sub(bn(tokenAmount)),
@@ -259,6 +260,29 @@ export function planDirectCurveCompletion(
     ids.add(wallet.id);
     owners.add(wallet.owner.toBase58());
   }
+  const insufficient =
+    "Insufficient wallet SOL or holding capacity to complete curve";
+  assert(
+    options.wallets.reduce(
+      (sum, wallet) => sum + wallet.maximumTokenAmount,
+      0n,
+    ) >= atoms(initial.realTokenReserves),
+    insufficient,
+  );
+  const rawCompletionCost = quote(
+    initial,
+    global,
+    feeConfig,
+    atoms(initial.realTokenReserves),
+  ).reserveInput;
+  /** Each rounded buy strictly increases the virtual reserve product, so splitting cannot lower the raw full-exhaustion cost. Fees and slippage only add spend. */
+  assert(
+    options.wallets.reduce(
+      (sum, wallet) => sum + wallet.maximumInputAmount,
+      0n,
+    ) >= rawCompletionCost,
+    insufficient,
+  );
   const capacity = (
     curve: BondingCurve,
     wallet: DirectCompletionWallet,
@@ -283,50 +307,98 @@ export function planDirectCurveCompletion(
     }
     return low;
   };
-  /** Tries ordered subsets of at most four wallets; an extra rounded dust buy can make a funded suffix infeasible. */
-  const canComplete = (start: BondingCurve, index: number): boolean => {
-    if (start.realTokenReserves.isZero()) return true;
-    const wallet = options.wallets[index];
-    if (!wallet) return false;
-    const tokens = capacity(start, wallet);
-    if (
-      tokens &&
-      canComplete(quote(start, global, feeConfig, tokens).next, index + 1)
-    )
-      return true;
-    return canComplete(start, index + 1);
+  const previousReservePlateau = (
+    curve: BondingCurve,
+    maximum: bigint,
+  ): bigint => {
+    if (!maximum) return 0n;
+    const maximumCost = quote(curve, global, feeConfig, maximum).reserveInput;
+    let low = 0n,
+      high = maximum - 1n;
+    while (low < high) {
+      const middle = (low + high + 1n) / 2n;
+      if (quote(curve, global, feeConfig, middle).reserveInput < maximumCost)
+        low = middle;
+      else high = middle - 1n;
+    }
+    return low;
   };
-  assert(
-    canComplete(initial, 0),
-    "Insufficient wallet SOL or holding capacity to complete curve",
-  );
+  const witnesses = new Map<string, readonly bigint[] | undefined>();
+  /** Tests maximum, preceding raw-cost plateau and skip choices, retaining an actual feasible suffix.
+   * @remarks Raw reserve cost is monotonic at a fixed curve; suffix affordability is not. At most four wallets bound the three-way recursion.
+   */
+  const findCompletion = (
+    curve: BondingCurve,
+    index: number,
+  ): readonly bigint[] | undefined => {
+    if (curve.realTokenReserves.isZero()) return [];
+    const wallet = options.wallets[index];
+    if (!wallet) return undefined;
+    const key = `${index}:${curve.virtualTokenReserves}:${curve.virtualQuoteReserves}:${curve.realTokenReserves}`;
+    if (witnesses.has(key)) return witnesses.get(key);
+    const maximum = capacity(curve, wallet);
+    const candidates = function* () {
+      yield maximum;
+      yield previousReservePlateau(curve, maximum);
+      yield 0n;
+    };
+    const tried = new Set<bigint>();
+    for (const tokens of candidates()) {
+      if (tried.has(tokens)) continue;
+      tried.add(tokens);
+      const next = tokens
+        ? quote(curve, global, feeConfig, tokens).next
+        : curve;
+      const suffix = findCompletion(next, index + 1);
+      if (suffix) {
+        const witness = [tokens, ...suffix];
+        witnesses.set(key, witness);
+        return witness;
+      }
+    }
+    witnesses.set(key, undefined);
+    return undefined;
+  };
+  let witness = findCompletion(initial, 0);
+  assert(witness, insufficient);
   let curve = initial;
   const allocations: DirectCurveCompletionAllocation[] = [];
   for (const [index, wallet] of options.wallets.entries()) {
     const remaining = atoms(curve.realTokenReserves);
     if (!remaining) break;
     const maximum = capacity(curve, wallet);
-    if (!maximum) continue;
     const walletCount = BigInt(options.wallets.length - index);
     const target = (remaining + walletCount - 1n) / walletCount;
-    let tokens = target < maximum ? target : maximum;
-    const suffixFits = (tokens: bigint) =>
-      canComplete(quote(curve, global, feeConfig, tokens).next, index + 1);
-    if (!suffixFits(tokens)) {
-      if (!suffixFits(maximum) && canComplete(curve, index + 1)) continue;
-      assert(
-        suffixFits(maximum),
-        "Insufficient wallet SOL or holding capacity to complete curve",
-      );
-      let low = tokens + 1n,
-        high = maximum;
+    const preferred = target < maximum ? target : maximum;
+    let tokens = witness[0]!;
+    let suffix: readonly bigint[] = witness.slice(1);
+    const preferredSuffix = preferred
+      ? findCompletion(
+          quote(curve, global, feeConfig, preferred).next,
+          index + 1,
+        )
+      : undefined;
+    if (preferredSuffix) {
+      tokens = preferred;
+      suffix = preferredSuffix;
+    } else if (tokens > preferred) {
+      let low = preferred + 1n,
+        high = tokens;
       while (low < high) {
         const middle = (low + high) / 2n;
-        if (suffixFits(middle)) high = middle;
-        else low = middle + 1n;
+        const checked = findCompletion(
+          quote(curve, global, feeConfig, middle).next,
+          index + 1,
+        );
+        if (checked) {
+          high = middle;
+          suffix = checked;
+        } else low = middle + 1n;
       }
-      tokens = low;
+      tokens = high;
     }
+    witness = suffix;
+    if (!tokens) continue;
     const result = quote(curve, global, feeConfig, tokens);
     allocations.push(
       Object.freeze({

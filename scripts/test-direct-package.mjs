@@ -140,6 +140,29 @@ for (const [index, entrypoint] of [...nodeSdks, sdk].entries()) {
         maximumInputAmount: completion.expectedInputAmount,
         maximumTokenAmount: completion.remainingTokenAmount,
       };
+      const boundary = entrypoint.planDirectCurveCompletion(market, {
+        wallets: [
+          {
+            id: "boundary",
+            owner: Keypair.fromSeed(new Uint8Array(32).fill(125)).publicKey,
+            maximumInputAmount: 101250003n,
+            maximumTokenAmount: 3564784043564n,
+          },
+          { ...buyer, maximumInputAmount: 85966676279n },
+        ],
+        maxWalletCount: 2,
+        slippageBps: 0,
+      });
+      assert.equal(boundary.allocations[0].tokenAmount, 3564784043563n);
+      assert.equal(boundary.allocations[0].maximumInputAmount, 101250000n);
+      assert.equal(boundary.allocations[1].maximumInputAmount, 85966676279n);
+      assert.equal(
+        boundary.allocations.reduce(
+          (sum, allocation) => sum + allocation.tokenAmount,
+          0n,
+        ),
+        completion.remainingTokenAmount,
+      );
       for (let walletCount = 2; walletCount <= 4; walletCount++) {
         const dust = Array.from(
           { length: walletCount - 1 },
