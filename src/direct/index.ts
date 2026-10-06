@@ -35,6 +35,10 @@ import * as damm1 from "../venues/meteora-damm-v1";
 import { prepareTokenAccounts } from "../venues/token-accounts";
 import { venueAccounts, venueAdapter } from "./legacy-venues";
 import { pumpAdapter, pumpDependencies } from "./pump";
+export {
+  directSharedAccounts,
+  directMarketAccountHints,
+} from "./account-discovery";
 import { assert, type MarketSnapshot, type ChainAccount } from "./snapshot";
 import { sizeDirectSellForExpectedOutput } from "./sell-sizing";
 import type { DirectSwapExpectation } from "./settlement";
@@ -120,6 +124,9 @@ export async function prepareDirectMarket(
   const mintInfos = await connection.getMultipleAccountsInfo([
     targetMint,
     quoteMint,
+    ...(venue === "Pump.fun" || venue === "PumpSwap"
+      ? pumpDependencies(info, venue === "PumpSwap")
+      : []),
   ]);
   const tokens = [targetMint, quoteMint].map((key, i) => {
     const a = mintInfos[i];

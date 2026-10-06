@@ -49,10 +49,13 @@ export interface PreparedTransactionVariant<
 }
 
 /** Per-route HTTP and submission result markers; accepted does not mean chain confirmation. */
-export interface PreparedTransactionTimingEvent {
+export interface PreparedTransactionTimingEvent extends Omit<HttpSendTimingEvent, "phase" | "reason"> {
   routeId: string;
   phase: HttpSendTimingEvent["phase"] | "accepted" | "rejected";
   at: number;
+  /** The locally verified transaction signature, never arbitrary response text. */
+  signature?: string;
+  reason?: HttpSendTimingEvent["reason"] | "signature_mismatch" | "invalid_response";
 }
 
 export interface SignedTransactionVariant {
@@ -395,13 +398,23 @@ export function prepareSignedTransactionSubmission(
     dispatched = true;
     return Promise.all(
       submissions.map(async ({ route, bytes, expectedSignature, client }) => {
-        const notifyResult = (accepted: boolean) => {
+        let lastEvent: HttpSendTimingEvent | undefined;
+        let dispatchedAt: number | undefined;
+        const notifyResult = (accepted: boolean, reason?: PreparedTransactionTimingEvent["reason"]) => {
           if (!options.onTiming) return;
           try {
+            const at = performance.timeOrigin + performance.now();
             options.onTiming({
               routeId: route.id,
               phase: accepted ? "accepted" : "rejected",
-              at: performance.timeOrigin + performance.now(),
+              at,
+              ...(dispatchedAt === undefined ? {} : { durationMs: at - dispatchedAt }),
+              signature: expectedSignature,
+              httpStatus: lastEvent?.httpStatus,
+              rpcErrorCode: lastEvent?.rpcErrorCode,
+              responseKind: lastEvent?.responseKind,
+              providerSuccess: lastEvent?.providerSuccess,
+              ...(reason ? { reason } : {}),
             });
           } catch {
             // Observer failures must not turn acceptance into rejection.
@@ -417,16 +430,20 @@ export function prepareSignedTransactionSubmission(
               timeoutMs: options.timeoutMs,
               headers: route.headers,
               onTiming: options.onTiming
-                ? (event) => options.onTiming!({ routeId: route.id, ...event })
+                ? (event) => {
+                    if (event.phase === "dispatch") dispatchedAt = event.at;
+                    lastEvent = { ...lastEvent, ...event };
+                    options.onTiming!({ routeId: route.id, ...event, signature: expectedSignature });
+                  }
                 : undefined,
             },
           );
           const accepted = signature === expectedSignature;
-          notifyResult(accepted);
+          notifyResult(accepted, accepted ? undefined : "signature_mismatch");
           return { routeId: route.id, accepted };
         } catch {
           // A timeout or error cannot establish whether the provider received the bytes.
-          notifyResult(false);
+          notifyResult(false, lastEvent?.reason ?? "invalid_response");
           return { routeId: route.id, accepted: false };
         }
       }),
