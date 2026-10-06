@@ -8,9 +8,12 @@ import {
 } from "@solana/spl-token";
 import bs58 from "bs58";
 import { Buffer } from "buffer";
+import { normalizeCompletionInput } from "./completion-settlement";
 
 export interface DirectSwapExpectation {
   provider: "direct";
+  /** Exact-output execution uses the input amount as a maximum spend, with an exact token floor. */
+  amountMode?: "exact-output";
   owner: string;
   pool: string;
   venue: string;
@@ -132,6 +135,11 @@ export function normalizeDirectFill(
   tx: unknown,
   expected: DirectSwapExpectation,
 ): NormalizedDirectFill {
+  if (
+    expected.amountMode !== undefined &&
+    expected.amountMode !== "exact-output"
+  )
+    fail("invalid execution amount mode");
   const owner = address(expected.owner, "owner");
   const inputMint = address(expected.inputMint, "input mint"),
     outputMint = address(expected.outputMint, "output mint");
@@ -580,8 +588,18 @@ export function normalizeDirectFill(
       fail("missing endpoint transfer evidence within direct swap");
     if (endpoint.native) endpoint.delta = transferDelta;
   }
-  const inputAmount = -input.delta,
-    outputAmount = output.delta;
+  const outputAmount = output.delta;
+  const inputAmount =
+    expected.amountMode === "exact-output"
+      ? normalizeCompletionInput(
+          expected,
+          top,
+          swapInner,
+          meta.logMessages,
+          outputAmount,
+          -input.delta,
+        )
+      : -input.delta;
   if (inputAmount <= 0n || inputAmount > budget)
     fail("actual input outside approved budget");
   if (outputAmount < floor) fail("actual net output below approved floor");

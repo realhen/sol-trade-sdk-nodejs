@@ -9,6 +9,8 @@ import { build } from "esbuild";
 const require = createRequire(import.meta.url);
 const names = [
   "prepareDirectMarket",
+  "directSharedAccounts",
+  "directMarketAccountHints",
   "inspectDirectMigration",
   "resolveDirectMigration",
   "discoverPoolQuoteMint",
@@ -17,6 +19,10 @@ const names = [
   "sizeDirectSellForQuoteValue",
   "buildDirectSwap",
   "normalizeDirectFill",
+  "quoteDirectCurveCompletion",
+  "planDirectCurveCompletion",
+  "buildDirectCurveCompletionBuy",
+  "buildDirectCurveCompletionMigration",
 ];
 const nodeSdks = [
   await import("sol-trade-sdk/direct"),
@@ -128,6 +134,92 @@ for (const [index, entrypoint] of [...nodeSdks, sdk].entries()) {
       new PublicKey(fixture.mint),
     );
     recorded.warm();
+    if (fixture.venue === "Pump.fun") {
+      const completion = entrypoint.quoteDirectCurveCompletion(market, 0);
+      const buyer = {
+        id: "full-capacity",
+        owner,
+        maximumInputAmount: completion.expectedInputAmount,
+        maximumTokenAmount: completion.remainingTokenAmount,
+      };
+      const boundary = entrypoint.planDirectCurveCompletion(market, {
+        wallets: [
+          {
+            id: "boundary",
+            owner: Keypair.fromSeed(new Uint8Array(32).fill(125)).publicKey,
+            maximumInputAmount: 101250003n,
+            maximumTokenAmount: 3564784043564n,
+          },
+          { ...buyer, maximumInputAmount: 85966676279n },
+        ],
+        maxWalletCount: 2,
+        slippageBps: 0,
+      });
+      assert.equal(boundary.allocations[0].tokenAmount, 3564784043563n);
+      assert.equal(boundary.allocations[0].maximumInputAmount, 101250000n);
+      assert.equal(boundary.allocations[1].maximumInputAmount, 85966676279n);
+      assert.equal(
+        boundary.allocations.reduce(
+          (sum, allocation) => sum + allocation.tokenAmount,
+          0n,
+        ),
+        completion.remainingTokenAmount,
+      );
+      for (let walletCount = 2; walletCount <= 4; walletCount++) {
+        const dust = Array.from(
+          { length: walletCount - 1 },
+          (_unused, position) => ({
+            id: `dust-${position}`,
+            owner: Keypair.fromSeed(new Uint8Array(32).fill(120 + position))
+              .publicKey,
+            maximumInputAmount: completion.expectedInputAmount,
+            maximumTokenAmount: 1n,
+          }),
+        );
+        const plan = entrypoint.planDirectCurveCompletion(market, {
+          wallets: [...dust, buyer],
+          maxWalletCount: walletCount,
+          slippageBps: 0,
+        });
+        assert.equal(
+          plan.allocations.length,
+          1,
+          "Optional dust buys must not block a fully funded buyer through reserve rounding",
+        );
+        assert.equal(plan.allocations[0].walletId, buyer.id);
+        assert.equal(
+          plan.allocations[0].tokenAmount,
+          completion.remainingTokenAmount,
+        );
+        assert.equal(plan.maximumInputAmount, completion.expectedInputAmount);
+        const built = await entrypoint.buildDirectCurveCompletionBuy(
+          market,
+          plan,
+          0,
+        );
+        assert.equal(
+          built.expectation.minimumOutput,
+          completion.remainingTokenAmount.toString(),
+        );
+        assert.equal(
+          built.expectation.inputAmount,
+          completion.expectedInputAmount.toString(),
+        );
+        const fundedSplit = entrypoint.planDirectCurveCompletion(market, {
+          wallets: [
+            ...dust,
+            { ...buyer, maximumInputAmount: buyer.maximumInputAmount + 100n },
+          ],
+          maxWalletCount: walletCount,
+          slippageBps: 0,
+        });
+        assert.equal(
+          fundedSplit.allocations.length,
+          walletCount,
+          "Feasible dust allocations should retain the requested wallet split",
+        );
+      }
+    }
     const savedBuy = fixture.quotes.find(
       (value) => value.input !== fixture.mint,
     );
