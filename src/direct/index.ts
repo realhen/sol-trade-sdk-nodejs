@@ -1,4 +1,9 @@
 export {
+  directLaunchTargets,
+  readDirectLaunchPools,
+  type DirectLaunchTargets,
+} from "./launch-discovery";
+export {
   inspectDirectMigration,
   resolveDirectMigration,
   type DirectMigration,
