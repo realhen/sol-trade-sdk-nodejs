@@ -17,6 +17,10 @@ const names = [
   "sizeDirectSellForQuoteValue",
   "buildDirectSwap",
   "normalizeDirectFill",
+  "quoteDirectCurveCompletion",
+  "planDirectCurveCompletion",
+  "buildDirectCurveCompletionBuy",
+  "buildDirectCurveCompletionMigration",
 ];
 const nodeSdks = [
   await import("sol-trade-sdk/direct"),

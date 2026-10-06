@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { Connection, Keypair, ComputeBudgetProgram } from "@solana/web3.js";
-import { NATIVE_MINT, TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
+import {
+  NATIVE_MINT,
+  TOKEN_PROGRAM_ID,
+  TOKEN_2022_PROGRAM_ID,
+} from "@solana/spl-token";
 import {
   inspectDirectMigration,
   prepareDirectMarket,
@@ -25,7 +29,13 @@ const {
  */
 export async function createPumpMigrationFixture(
   rpcUrl = process.env.SURFPOOL_RPC_URL ?? "http://127.0.0.1:8899",
+  { tokenProgram = TOKEN_2022_PROGRAM_ID } = {},
 ) {
+  assert(
+    tokenProgram.equals(TOKEN_PROGRAM_ID) ||
+      tokenProgram.equals(TOKEN_2022_PROGRAM_ID),
+    "Unsupported fixture token program",
+  );
   const endpoint = new URL(rpcUrl);
   assert(
     endpoint.protocol === "http:" &&
@@ -73,7 +83,13 @@ export async function createPumpMigrationFixture(
   const destination = canonicalPumpPoolPda(mint);
   const signatures = {};
   const receipts = [];
-  async function send(stage, instructions, signers = [owner]) {
+  async function send(
+    stage,
+    instructions,
+    signers = [owner],
+    computeUnitLimit = 1_400_000,
+  ) {
+    const payer = signers[0].publicKey;
     const keys = [
       ...new Map(
         instructions
@@ -86,12 +102,12 @@ export async function createPumpMigrationFixture(
     ];
     for (let offset = 0; offset < keys.length; offset += 10)
       await connection.getMultipleAccountsInfo(keys.slice(offset, offset + 10));
-    const beforeLamports = await connection.getBalance(owner.publicKey);
+    const beforeLamports = await connection.getBalance(payer);
     const block = await connection.getLatestBlockhash();
     const transaction = compileV1Transaction({
-      payer: owner.publicKey,
+      payer,
       instructions: [
-        ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }),
+        ComputeBudgetProgram.setComputeUnitLimit({ units: computeUnitLimit }),
         ...instructions,
       ],
       recentBlockhash: block.blockhash,
@@ -122,7 +138,7 @@ export async function createPumpMigrationFixture(
           stage,
           signature,
           beforeLamports,
-          afterLamports: await connection.getBalance(owner.publicKey),
+          afterLamports: await connection.getBalance(payer),
           slot: receipt.slot,
         });
         return signature;
@@ -143,7 +159,11 @@ export async function createPumpMigrationFixture(
   }
   const online = new OnlinePumpSdk(connection);
   const global = await online.fetchGlobal();
-  const create = await PUMP_SDK.createV2Instruction({
+  const create = await (
+    tokenProgram.equals(TOKEN_PROGRAM_ID)
+      ? PUMP_SDK.createInstruction.bind(PUMP_SDK)
+      : PUMP_SDK.createV2Instruction.bind(PUMP_SDK)
+  )({
     mint,
     name: "Local Migration Fixture",
     symbol: "MIGTEST",
@@ -157,7 +177,7 @@ export async function createPumpMigrationFixture(
     const state = await online.fetchBuyState(
       mint,
       owner.publicKey,
-      TOKEN_2022_PROGRAM_ID,
+      tokenProgram,
     );
     assert(!state.bondingCurve.complete, "Curve is already complete");
     const amount = state.bondingCurve.realTokenReserves;
@@ -178,7 +198,7 @@ export async function createPumpMigrationFixture(
       amount,
       solAmount,
       slippage: 1,
-      tokenProgram: TOKEN_2022_PROGRAM_ID,
+      tokenProgram,
     });
     signatures.graduation = await send("graduate", instructions);
     assert(
@@ -204,7 +224,7 @@ export async function createPumpMigrationFixture(
       withdrawAuthority: global.withdrawAuthority,
       mint,
       user: owner.publicKey,
-      tokenProgram: TOKEN_2022_PROGRAM_ID,
+      tokenProgram,
     });
     assert(
       instruction.keys
@@ -235,6 +255,7 @@ export async function createPumpMigrationFixture(
     migrate,
     signatures,
     receipts,
+    sendInstructions: send,
     sourceVenue: "Pump.fun",
     destinationVenue: "PumpSwap",
   };

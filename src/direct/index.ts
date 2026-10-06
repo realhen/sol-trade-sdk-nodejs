@@ -35,6 +35,17 @@ import * as damm1 from "../venues/meteora-damm-v1";
 import { prepareTokenAccounts } from "../venues/token-accounts";
 import { venueAccounts, venueAdapter } from "./legacy-venues";
 import { pumpAdapter, pumpDependencies } from "./pump";
+import { registerDirectCompletion } from "./completion";
+export {
+  quoteDirectCurveCompletion,
+  planDirectCurveCompletion,
+  buildDirectCurveCompletionBuy,
+  buildDirectCurveCompletionMigration,
+  type DirectCompletionWallet,
+  type DirectCurveCompletionQuote,
+  type DirectCurveCompletionAllocation,
+  type DirectCurveCompletionPlan,
+} from "./completion";
 import { assert, type MarketSnapshot, type ChainAccount } from "./snapshot";
 import { sizeDirectSellForExpectedOutput } from "./sell-sizing";
 import type { DirectSwapExpectation } from "./settlement";
@@ -310,6 +321,7 @@ export async function prepareDirectMarket(
       wallet: PublicKey.default.toBase58(),
       accounts,
     };
+    if (venue === "Pump.fun") registerDirectCompletion(market, snapshot);
     const adapter = (input: PublicKey, owner: PublicKey) =>
       venue === "Pump.fun" || venue === "PumpSwap"
         ? pumpAdapter(snapshot, input, owner)
