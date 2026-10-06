@@ -422,19 +422,27 @@ const classicMarket = await sdk.prepareDirectMarket(
   classic.mint,
 );
 assert(classicMarket.tokenProgram.equals(TOKEN_PROGRAM_ID));
-const classicQuote = sdk.quoteDirectCurveCompletion(classicMarket, 100);
+const classicQuote = sdk.quoteDirectCurveCompletion(classicMarket, 0);
 const classicPlan = sdk.planDirectCurveCompletion(classicMarket, {
   wallets: [
     {
+      id: "optional-dust-buyer",
+      owner: buyers[0].publicKey,
+      maximumInputAmount: classicQuote.expectedInputAmount,
+      maximumTokenAmount: 1n,
+    },
+    {
       id: "classic-buyer",
       owner: classic.owner.publicKey,
-      maximumInputAmount: 200_000_000_000n,
+      maximumInputAmount: classicQuote.expectedInputAmount,
       maximumTokenAmount: classicQuote.remainingTokenAmount,
     },
   ],
-  maxWalletCount: 1,
-  slippageBps: 100,
+  maxWalletCount: 2,
+  slippageBps: 0,
 });
+assert.equal(classicPlan.allocations.length, 1);
+assert.equal(classicPlan.allocations[0].walletId, "classic-buyer");
 const classicBuy = await sdk.buildDirectCurveCompletionBuy(
   classicMarket,
   classicPlan,

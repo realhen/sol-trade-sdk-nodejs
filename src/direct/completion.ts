@@ -283,14 +283,18 @@ export function planDirectCurveCompletion(
     }
     return low;
   };
+  /** Tries ordered subsets of at most four wallets; an extra rounded dust buy can make a funded suffix infeasible. */
   const canComplete = (start: BondingCurve, index: number): boolean => {
-    let curve = start;
-    for (const wallet of options.wallets.slice(index)) {
-      if (curve.realTokenReserves.isZero()) return true;
-      const tokens = capacity(curve, wallet);
-      if (tokens) curve = quote(curve, global, feeConfig, tokens).next;
-    }
-    return curve.realTokenReserves.isZero();
+    if (start.realTokenReserves.isZero()) return true;
+    const wallet = options.wallets[index];
+    if (!wallet) return false;
+    const tokens = capacity(start, wallet);
+    if (
+      tokens &&
+      canComplete(quote(start, global, feeConfig, tokens).next, index + 1)
+    )
+      return true;
+    return canComplete(start, index + 1);
   };
   assert(
     canComplete(initial, 0),
@@ -309,6 +313,7 @@ export function planDirectCurveCompletion(
     const suffixFits = (tokens: bigint) =>
       canComplete(quote(curve, global, feeConfig, tokens).next, index + 1);
     if (!suffixFits(tokens)) {
+      if (!suffixFits(maximum) && canComplete(curve, index + 1)) continue;
       assert(
         suffixFits(maximum),
         "Insufficient wallet SOL or holding capacity to complete curve",

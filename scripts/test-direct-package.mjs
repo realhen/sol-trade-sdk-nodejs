@@ -132,6 +132,69 @@ for (const [index, entrypoint] of [...nodeSdks, sdk].entries()) {
       new PublicKey(fixture.mint),
     );
     recorded.warm();
+    if (fixture.venue === "Pump.fun") {
+      const completion = entrypoint.quoteDirectCurveCompletion(market, 0);
+      const buyer = {
+        id: "full-capacity",
+        owner,
+        maximumInputAmount: completion.expectedInputAmount,
+        maximumTokenAmount: completion.remainingTokenAmount,
+      };
+      for (let walletCount = 2; walletCount <= 4; walletCount++) {
+        const dust = Array.from(
+          { length: walletCount - 1 },
+          (_unused, position) => ({
+            id: `dust-${position}`,
+            owner: Keypair.fromSeed(new Uint8Array(32).fill(120 + position))
+              .publicKey,
+            maximumInputAmount: completion.expectedInputAmount,
+            maximumTokenAmount: 1n,
+          }),
+        );
+        const plan = entrypoint.planDirectCurveCompletion(market, {
+          wallets: [...dust, buyer],
+          maxWalletCount: walletCount,
+          slippageBps: 0,
+        });
+        assert.equal(
+          plan.allocations.length,
+          1,
+          "Optional dust buys must not block a fully funded buyer through reserve rounding",
+        );
+        assert.equal(plan.allocations[0].walletId, buyer.id);
+        assert.equal(
+          plan.allocations[0].tokenAmount,
+          completion.remainingTokenAmount,
+        );
+        assert.equal(plan.maximumInputAmount, completion.expectedInputAmount);
+        const built = await entrypoint.buildDirectCurveCompletionBuy(
+          market,
+          plan,
+          0,
+        );
+        assert.equal(
+          built.expectation.minimumOutput,
+          completion.remainingTokenAmount.toString(),
+        );
+        assert.equal(
+          built.expectation.inputAmount,
+          completion.expectedInputAmount.toString(),
+        );
+        const fundedSplit = entrypoint.planDirectCurveCompletion(market, {
+          wallets: [
+            ...dust,
+            { ...buyer, maximumInputAmount: buyer.maximumInputAmount + 100n },
+          ],
+          maxWalletCount: walletCount,
+          slippageBps: 0,
+        });
+        assert.equal(
+          fundedSplit.allocations.length,
+          walletCount,
+          "Feasible dust allocations should retain the requested wallet split",
+        );
+      }
+    }
     const savedBuy = fixture.quotes.find(
       (value) => value.input !== fixture.mint,
     );
