@@ -629,4 +629,8 @@ export {
 
 export { createDirectBuySizer } from "./buy-sizing";
 
-export { decodeConfirmedSolTrades, type ConfirmedSolTrade } from "./receipts";
+export {
+  decodeConfirmedSolTrades,
+  decodeConfirmedSolTradeReceipt,
+  type ConfirmedSolTrade,
+} from "./receipts";
