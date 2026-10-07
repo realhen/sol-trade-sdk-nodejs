@@ -11,10 +11,9 @@ import {
 } from "@solana/spl-token";
 import bs58 from "bs58";
 import * as pump from "@pump-fun/pump-sdk";
-import type { SandboxMarket } from "./types";
 
 /** Confirmed execution quantities; SOL and token amounts are whole units, timestamp is milliseconds. */
-export interface SandboxTradeReceipt {
+export interface ConfirmedSolTrade {
   mint: string;
   wallet: string;
   side: "buy" | "sell";
@@ -45,6 +44,7 @@ const swapLayouts: SwapLayout[] = [
     program: "LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj",
     discriminators: [
       [250, 234, 13, 123, 213, 156, 19, 236],
+      [24, 211, 116, 40, 105, 3, 153, 56],
       [149, 39, 222, 155, 211, 124, 152, 26],
     ],
     user: 0,
@@ -79,7 +79,10 @@ const swapLayouts: SwapLayout[] = [
   },
   {
     program: "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG",
-    discriminators: [[248, 198, 158, 145, 225, 117, 135, 200]],
+    discriminators: [
+      [248, 198, 158, 145, 225, 117, 135, 200],
+      [65, 75, 63, 76, 235, 91, 91, 136],
+    ],
     user: 8,
     mintA: 6,
     mintB: 7,
@@ -90,18 +93,18 @@ const swapLayouts: SwapLayout[] = [
 ];
 
 /**
- * Decode successful confirmed Pump events and verified swaps from all sandbox venues.
+ * Decode successful confirmed Pump events and verified swaps on supported SOL-paired venues.
  * Other venues use actual SPL transfers between the swap's user accounts and vaults.
  * Pump quantities are event swap principal; other venues report vault settlement amounts,
  * including fees retained by the vault but excluding separate fee-recipient transfers.
  * Rent, transaction fees, unrelated transfers, launches and liquidity migration never become volume.
  * Missing or truncated execution evidence produces no invented trade.
  */
-export async function decodeSandboxTransaction(
+export async function decodeConfirmedSolTrades(
   connection: Connection,
   signature: string,
-  markets: SandboxMarket[],
-): Promise<SandboxTradeReceipt[]> {
+  mints: readonly string[],
+): Promise<ConfirmedSolTrade[]> {
   const tx = await connection.getParsedTransaction(signature, {
     commitment: "confirmed",
     maxSupportedTransactionVersion: 1,
@@ -109,7 +112,7 @@ export async function decodeSandboxTransaction(
   if (!tx)
     throw new Error(`Confirmed receipt ${signature} is not available yet`);
   if (!tx.meta || tx.meta.err) return [];
-  const result: SandboxTradeReceipt[] = [];
+  const result: ConfirmedSolTrade[] = [];
   let blockTimestamp: Promise<number> | undefined;
   const confirmedTimestamp = () => {
     blockTimestamp ??= connection.getBlockTime(tx.slot).then((seconds) => {
@@ -123,10 +126,7 @@ export async function decodeSandboxTransaction(
     return blockTimestamp;
   };
   const append = (
-    trade: Omit<
-      SandboxTradeReceipt,
-      "priceSol" | "signature" | "index" | "slot"
-    >,
+    trade: Omit<ConfirmedSolTrade, "priceSol" | "signature" | "index" | "slot">,
   ) => {
     if (!(trade.solAmount > 0 && trade.tokenAmount > 0)) return;
     result.push({
@@ -168,7 +168,7 @@ export async function decodeSandboxTransaction(
       discriminator.equals(curveDiscriminator)
     ) {
       const event = pump.PUMP_SDK.decodeTradeEventBc(body);
-      if (markets.some((market) => market.mint === event.mint.toBase58()))
+      if (mints.includes(event.mint.toBase58()))
         append({
           mint: event.mint.toBase58(),
           wallet: event.user.toBase58(),
@@ -187,16 +187,12 @@ export async function decodeSandboxTransaction(
         side === "buy"
           ? pump.PUMP_SDK.decodeBuyEventAmm(body)
           : pump.PUMP_SDK.decodeSellEventAmm(body);
-      const market = markets.find(
-        (market) =>
-          market.launchpad === "Pump.fun" &&
-          pump
-            .canonicalPumpPoolPda(new PublicKey(market.mint))
-            .equals(event.pool),
+      const mint = mints.find((mint) =>
+        pump.canonicalPumpPoolPda(new PublicKey(mint)).equals(event.pool),
       );
-      if (market)
+      if (mint)
         append({
-          mint: market.mint,
+          mint,
           wallet: event.user.toBase58(),
           side,
           solAmount:
@@ -251,8 +247,7 @@ export async function decodeSandboxTransaction(
           : mintB === NATIVE_MINT.toBase58()
             ? mintA
             : undefined;
-      if (!tokenMint || !markets.some((market) => market.mint === tokenMint))
-        continue;
+      if (!tokenMint || !mints.includes(tokenMint)) continue;
       const vaults = new Map([
         [account(layout.vaultA), mintA],
         [account(layout.vaultB), mintB],

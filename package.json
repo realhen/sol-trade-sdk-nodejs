@@ -77,10 +77,10 @@
       "types": "./dist/direct/browser.d.mts",
       "import": "./dist/direct/browser.mjs"
     },
-    "./sandbox": {
-      "types": "./dist/sandbox/index.d.ts",
-      "import": "./dist/sandbox/index.mjs",
-      "require": "./dist/sandbox/index.js"
+    "./launchpad": {
+      "types": "./dist/launchpad/index.d.ts",
+      "import": "./dist/launchpad/index.mjs",
+      "require": "./dist/launchpad/index.js"
     }
   },
   "files": [
@@ -88,7 +88,7 @@
     "src"
   ],
   "scripts": {
-    "build": "tsup src/index.ts src/cache/index.ts src/pool/index.ts src/rpc/index.ts src/swqos/index.ts src/trading/index.ts src/perf/index.ts src/venues/index.ts src/swqos-settings.ts src/router/index.ts src/direct/index.ts src/sandbox/index.ts --format cjs,esm --dts --clean && npm run build:browser && node scripts/build-venues-browser.mjs && node scripts/build-router-browser.mjs && node scripts/build-swqos-settings-browser.mjs && node scripts/build-direct-browser.mjs",
+    "build": "tsup src/index.ts src/cache/index.ts src/pool/index.ts src/rpc/index.ts src/swqos/index.ts src/trading/index.ts src/perf/index.ts src/venues/index.ts src/swqos-settings.ts src/router/index.ts src/direct/index.ts src/launchpad/index.ts --format cjs,esm --dts --clean && npm run build:browser && node scripts/build-venues-browser.mjs && node scripts/build-router-browser.mjs && node scripts/build-swqos-settings-browser.mjs && node scripts/build-direct-browser.mjs",
     "dev": "tsup src/index.ts src/cache/index.ts src/pool/index.ts src/rpc/index.ts src/swqos/index.ts src/trading/index.ts src/perf/index.ts --format cjs,esm --dts --watch",
     "test": "vitest run",
     "test:watch": "vitest",
