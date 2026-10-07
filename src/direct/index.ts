@@ -1,4 +1,9 @@
 export {
+  directLaunchTargets,
+  readDirectLaunchPools,
+  type DirectLaunchTargets,
+} from "./launch-discovery";
+export {
   inspectDirectMigration,
   resolveDirectMigration,
   type DirectMigration,
@@ -623,3 +628,5 @@ export {
 } from "./sell-sizing";
 
 export { createDirectBuySizer } from "./buy-sizing";
+
+export { decodeConfirmedSolTrades, type ConfirmedSolTrade } from "./receipts";
