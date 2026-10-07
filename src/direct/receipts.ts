@@ -109,6 +109,23 @@ export async function decodeConfirmedSolTrades(
     commitment: "confirmed",
     maxSupportedTransactionVersion: 1,
   });
+  return decodeConfirmedSolTradeReceipt(connection, signature, mints, tx);
+}
+
+/**
+ * Decode a caller-fetched confirmed jsonParsed receipt, including native v1 transactions.
+ * @remarks Fetch with at least confirmed commitment and maxSupportedTransactionVersion: 1.
+ * RPC receipt bodies do not prove commitment; the caller owns transport and confirmation.
+ * Both raw RPC string addresses and web3.js PublicKey addresses are accepted. The receipt
+ * signature must match the requested signature. Unknown or malformed evidence rejects.
+ */
+export async function decodeConfirmedSolTradeReceipt(
+  connection: Connection,
+  signature: string,
+  mints: readonly string[],
+  receipt: unknown,
+): Promise<ConfirmedSolTrade[]> {
+  const tx = parseReceipt(receipt, signature);
   if (!tx)
     throw new Error(`Confirmed receipt ${signature} is not available yet`);
   if (!tx.meta || tx.meta.err) return [];
@@ -326,4 +343,117 @@ export async function decodeConfirmedSolTrades(
     }
   }
   return result;
+}
+
+function record(value: unknown, field: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error(`Invalid confirmed receipt ${field}`);
+  return value as Record<string, unknown>;
+}
+function array(value: unknown, field: string): unknown[] {
+  if (!Array.isArray(value))
+    throw new Error(`Invalid confirmed receipt ${field}`);
+  return value;
+}
+function key(value: unknown): PublicKey {
+  if (value instanceof PublicKey) return value;
+  if (typeof value !== "string")
+    throw new Error("Invalid confirmed receipt address");
+  return new PublicKey(value);
+}
+function instruction(value: unknown): Instruction {
+  const raw = record(value, "instruction");
+  const programId = key(raw.programId);
+  const stackHeight = raw.stackHeight;
+  if (
+    stackHeight !== undefined &&
+    stackHeight !== null &&
+    (!Number.isSafeInteger(stackHeight) || Number(stackHeight) < 1)
+  )
+    throw new Error("Invalid confirmed receipt stack height");
+  const height = { stackHeight: stackHeight as number | null | undefined };
+  if ("parsed" in raw)
+    return {
+      ...height,
+      programId,
+      program: typeof raw.program === "string" ? raw.program : "",
+      parsed: record(raw.parsed, "parsed instruction"),
+    };
+  if (typeof raw.data !== "string")
+    throw new Error("Invalid confirmed receipt instruction data");
+  return {
+    ...height,
+    programId,
+    data: raw.data,
+    accounts: array(raw.accounts, "instruction accounts").map(key),
+  };
+}
+function balances(value: unknown) {
+  return array(value ?? [], "token balances").map((entry) => {
+    const raw = record(entry, "token balance");
+    const tokenAmount = record(raw.uiTokenAmount, "token amount");
+    if (
+      !Number.isInteger(tokenAmount.decimals) ||
+      Number(tokenAmount.decimals) < 0 ||
+      Number(tokenAmount.decimals) > 255
+    )
+      throw new Error("Invalid confirmed receipt token decimals");
+    return {
+      mint: key(raw.mint).toBase58(),
+      uiTokenAmount: { decimals: Number(tokenAmount.decimals) },
+    };
+  });
+}
+function parseReceipt(receipt: unknown, signature: string) {
+  if (receipt === null) return null;
+  const raw = record(receipt, "envelope");
+  if (
+    !Number.isSafeInteger(raw.slot) ||
+    Number(raw.slot) < 0 ||
+    (raw.version !== undefined &&
+      !["legacy", 0, 1].includes(raw.version as string | number))
+  )
+    throw new Error("Invalid confirmed receipt slot or version");
+  const transaction = record(raw.transaction, "transaction");
+  if (array(transaction.signatures, "signatures")[0] !== signature)
+    throw new Error("Confirmed receipt signature mismatch");
+  const message = record(transaction.message, "message");
+  const meta = raw.meta === null ? null : record(raw.meta, "metadata");
+  if (meta && !("err" in meta))
+    throw new Error("Confirmed receipt status is missing");
+  const logs = meta?.logMessages == null ? [] : array(meta.logMessages, "logs");
+  if (!logs.every((line) => typeof line === "string"))
+    throw new Error("Invalid confirmed receipt log");
+  return {
+    slot: Number(raw.slot),
+    transaction: {
+      message: {
+        instructions: array(message.instructions, "instructions").map(
+          instruction,
+        ),
+      },
+    },
+    meta: meta
+      ? {
+          err: meta.err,
+          logMessages: logs as string[],
+          preTokenBalances: balances(meta.preTokenBalances),
+          postTokenBalances: balances(meta.postTokenBalances),
+          innerInstructions: array(
+            meta.innerInstructions ?? [],
+            "inner instructions",
+          ).map((entry) => {
+            const group = record(entry, "inner instruction group");
+            if (!Number.isSafeInteger(group.index) || Number(group.index) < 0)
+              throw new Error("Invalid confirmed receipt instruction index");
+            return {
+              index: Number(group.index),
+              instructions: array(group.instructions, "inner instructions").map(
+                instruction,
+              ),
+            };
+          }),
+        }
+      : null,
+  };
 }

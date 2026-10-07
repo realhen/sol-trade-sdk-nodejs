@@ -745,3 +745,9 @@ settlement, including vault-retained fees but excluding separate recipient fees.
 Applications own lifecycle scheduling, transaction submission, confirmation,
 readiness polling, and any local test fixtures. End-to-end launch and migration
 coverage is exercised through Moixa's actual transaction and indexing workflows.
+
+For caller-owned RPC transports or native v1 receipts, pass the confirmed
+`jsonParsed` response to `decodeConfirmedSolTradeReceipt`. This avoids web3.js
+1.x's legacy/v0-only response coercion while keeping RPC credentials and fetch
+configuration with the application. The decoder validates the envelope,
+signature, instruction addresses and execution evidence before attributing swaps.
