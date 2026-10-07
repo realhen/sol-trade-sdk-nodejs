@@ -726,3 +726,38 @@ closed. Persist the complete returned expectation for receipt verification;
 settled amounts come from confirmed balance changes and verified swap scope,
 including partial actual input on Orca. The older `router` API remains available
 for compatibility, separately from this direct API.
+
+## Local multi-venue sandboxes
+
+The `sol-trade-sdk/sandbox` entry point provides `PumpSandbox`, `LaunchLabSandbox`,
+`DbcSandbox`, and `decodeSandboxTransaction`. These adapters own real token creation,
+curve swaps, completion, destination-pool migration, quotes, and observed market
+values for Pump.fun/PumpSwap, LaunchLab/CPMM, and DBC/DAMM v2.
+
+Applications supply a verified private Surfpool connection and a `send(instructions,
+signer, extraSigners)` callback. The callback must support v0 transactions with real
+address lookup tables for LaunchLab migration. Applications retain wallet custody,
+scheduling, persistence, and submission; observations use SOL units and progress
+percentages from 0 to 100.
+
+Call `initialize(payer)` on Pump and LaunchLab before use. LaunchLab's local setup
+changes only the cloned configuration's migration authority to the sandbox payer;
+the returned original account bytes must be retained as fixture provenance. It
+requires a loopback endpoint or explicitly configured `SURFPOOL_PRIVATE_HOST` and
+an identified Surfpool bank. Signature verification remains enabled. DBC creates
+its configuration through real instructions and contributes 0.1 SOL toward migration
+account rent. Migrated CPMM trading waits for its chain opening time, with a bounded
+six-second timeout.
+
+Receipt normalization excludes launches, liquidity migrations, rent, and network
+fees. Pump uses official event principal; the other venues use actual swap
+user/vault transfers, including vault-retained swap fees and excluding separately
+transferred fees. Partial fills report settled quantities. Non-Pump receipt times
+come from the canonical slot's block time. Missing evidence never creates a fill.
+
+The `scripts/sandbox-launchlab-e2e.mjs` and `scripts/sandbox-dbc-e2e.mjs` workflows
+require isolated offline Surfpool banks loaded with Moixa's public fixture. Set
+`SANDBOX_FIXTURE_PATH` for LaunchLab and `SANDBOX_RPC_URL` (LaunchLab) or
+`SANDBOX_RPC` (DBC) to the corresponding private endpoint. They create disposable
+funded wallets and execute real signed launches, swaps, migrations, and destination
+swaps. The Moixa application suite additionally covers Pump and an unattended market.
