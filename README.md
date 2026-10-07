@@ -726,3 +726,22 @@ closed. Persist the complete returned expectation for receipt verification;
 settled amounts come from confirmed balance changes and verified swap scope,
 including partial actual input on Orca. The older `router` API remains available
 for compatibility, separately from this direct API.
+
+## Launch creation and migration
+
+`sol-trade-sdk/launchpad` provides unsigned creation, curve-completion, migration,
+and observation APIs for Pump.fun, LaunchLab, and Meteora DBC. Callers supply
+public keys, metadata, launch configuration, and slippage. Builders never load
+wallets, sign, submit, fund accounts, or modify an RPC bank. LaunchLab migration
+requires the actual configured authority; the SDK does not bypass that permission.
+
+Use the existing `sol-trade-sdk/direct` prepare/quote/build APIs for swaps before
+and after migration. Its `decodeConfirmedSolTrades` helper decodes confirmed
+SOL-paired swap receipts for a caller-selected list of mints, including executed
+partial fills. Liquidity migration, rent, and unrelated transfers are excluded.
+Pump events report swap principal; other supported venues report user-to-vault
+settlement, including vault-retained fees but excluding separate recipient fees.
+
+Applications own lifecycle scheduling, transaction submission, confirmation,
+readiness polling, and any local test fixtures. End-to-end launch and migration
+coverage is exercised through Moixa's actual transaction and indexing workflows.
