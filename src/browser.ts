@@ -19,3 +19,4 @@ export * from "./common/transaction-v1";
 export * from "./swqos/http-settings";
 export * from "./common/priority-observation";
 export * from "./common/trading-programs";
+export * from "./common/execution-costs";
