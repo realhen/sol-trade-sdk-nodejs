@@ -3,6 +3,7 @@ import {
   PUMP_SDK,
   PUMP_PROGRAM_ID,
   creatorVaultPda,
+  bondingCurvePda,
   pumpIdl,
   type TradeEventBc,
 } from "@pump-fun/pump-sdk";
@@ -17,41 +18,42 @@ const discriminator = Buffer.from(
 );
 const atoms = (value: { toString(): string }) => {
   const text = value.toString();
-  assert(/^(0|[1-9][0-9]*)$/.test(text), "Invalid completion event amount");
+  assert(/^(0|[1-9][0-9]*)$/.test(text), "Invalid Pump buy event amount");
   const result = BigInt(text);
-  assert(result < 1n << 64n, "Invalid completion event u64");
+  assert(result < 1n << 64n, "Invalid Pump buy event u64");
   return result;
 };
-/** Authenticate the official exact-token Pump event against the executed native transfers.
- * @remarks Only an event emitted by the sole top-level Pump invocation is accepted.
- * Creator-vault rent topups are excluded after independently reconciling all swap transfers.
+/** Reconcile native Pump buy cash flow against its authenticated trade event.
+ * @remarks Only the sole top-level Pump invocation can supply the event. Curve and
+ * creator-vault funding are returned separately from swap input, after every owner
+ * transfer is reconciled. Funding is an expense, not refundable wallet-account rent.
  */
-export function normalizeCompletionInput(
+export function normalizePumpBuyInput(
   expected: DirectSwapExpectation,
   top: RecordValue[],
   inner: RecordValue[],
   logs: unknown,
   tokenOutput: bigint,
   observedInput: bigint,
-): bigint {
+): { inputAmount: bigint; accountFundingLamports: bigint } {
   assert(
     expected.venue === "Pump.fun" &&
       top.filter((ix) => ix.programId === PROGRAM).length === 1 &&
       Array.isArray(logs),
-    "Missing authenticated Pump completion event",
+    "Missing authenticated Pump buy event",
   );
   const stack: string[] = [];
   const events: TradeEventBc[] = [];
   let pumpRoots = 0;
   for (const line of logs) {
-    assert(typeof line === "string", "Invalid completion invocation logs");
+    assert(typeof line === "string", "Invalid Pump buy invocation logs");
     const invoke = /^Program ([1-9A-HJ-NP-Za-km-z]+) invoke \[(\d+)\]$/.exec(
       line,
     );
     if (invoke) {
       assert(
         Number(invoke[2]) === stack.length + 1,
-        "Ambiguous completion invocation depth",
+        "Ambiguous Pump buy invocation depth",
       );
       if (!stack.length && invoke[1] === PROGRAM) pumpRoots++;
       stack.push(invoke[1]!);
@@ -63,7 +65,7 @@ export function normalizeCompletionInput(
     if (finish) {
       assert(
         finish[2] === "success" && stack.pop() === finish[1],
-        "Incomplete completion invocation logs",
+        "Incomplete Pump buy invocation logs",
       );
       continue;
     }
@@ -79,29 +81,49 @@ export function normalizeCompletionInput(
   }
   assert(
     !stack.length && pumpRoots === 1 && events.length === 1,
-    "Missing or ambiguous completion TradeEvent",
+    "Missing or ambiguous Pump buy TradeEvent",
   );
   const event = events[0]!;
   assert(
     event.user.toBase58() === expected.owner &&
       event.mint.toBase58() === expected.outputMint &&
       event.isBuy &&
-      event.ixName === "buy" &&
+      (expected.amountMode === "exact-output"
+        ? event.ixName === "buy"
+        : event.ixName === "buy" || event.ixName === "buy_exact_sol_in") &&
       !event.mayhemMode &&
       event.quoteMint.equals(PublicKey.default) &&
       atoms(event.cashback) === 0n &&
       atoms(event.tokenAmount) === tokenOutput &&
-      tokenOutput === BigInt(expected.minimumOutput),
-    "Completion event does not match exact-token execution",
+      (expected.amountMode !== "exact-output" ||
+        tokenOutput === BigInt(expected.minimumOutput)),
+    "Pump buy event does not match execution",
   );
   const route = expected.swapInstructions[0]!;
+  const instruction = pumpIdl.instructions.find(
+    (ix) => ix.name === event.ixName,
+  );
+  assert(
+    expected.swapInstructions.length === 1 &&
+      route.programId === PROGRAM &&
+      instruction &&
+      Buffer.from(route.data, "base64")
+        .subarray(0, 8)
+        .equals(Buffer.from(instruction.discriminator)) &&
+      bondingCurvePda(event.mint).toBase58() === expected.pool,
+    "Pump buy event does not match selected instruction and curve",
+  );
   const creatorVault = creatorVaultPda(event.creator).toBase58();
   const buybackRecipient = route.keys[route.keys.length - 1]!.pubkey;
   const feeRecipient = event.feeRecipient.toBase58();
   assert(
-    route.keys.some((key) => key.pubkey === creatorVault) &&
-      route.keys.some((key) => key.pubkey === feeRecipient),
-    "Completion event fee accounts mismatch",
+    new Set([expected.pool, creatorVault, feeRecipient, buybackRecipient])
+      .size === 4 &&
+      [expected.pool, creatorVault, feeRecipient, buybackRecipient].every(
+        (address) =>
+          route.keys.some((key) => key.pubkey === address && key.isWritable),
+      ),
+    "Pump buy event fee accounts mismatch",
   );
   const transfers = new Map<string, bigint[]>();
   for (const ix of inner) {
@@ -122,13 +144,13 @@ export function normalizeCompletionInput(
         typeof info.lamports === "number" &&
         Number.isSafeInteger(info.lamports) &&
         info.lamports >= 0,
-      "Unsupported completion native transfer",
+      "Unsupported Pump buy native transfer",
     );
     assert(
       [expected.pool, creatorVault, feeRecipient, buybackRecipient].includes(
         info.destination,
       ),
-      "Unexpected completion native destination",
+      "Unexpected Pump buy native destination",
     );
     const values = transfers.get(info.destination) ?? [];
     values.push(BigInt(info.lamports));
@@ -142,25 +164,29 @@ export function normalizeCompletionInput(
     buyback = atoms(event.buybackFee);
   assert(
     fee >= buyback &&
-      sum(expected.pool) === sol &&
       sum(feeRecipient) === fee - buyback &&
       sum(buybackRecipient) === buyback,
-    "Completion event disagrees with curve or fee transfers",
+    "Pump buy event disagrees with curve or fee transfers",
   );
-  const creatorTransfers = transfers.get(creatorVault) ?? [];
-  const rent = sum(creatorVault) - creator;
-  assert(
-    rent >= 0n &&
-      (rent === 0n ||
-        (creatorTransfers.length === 2 &&
-          creatorTransfers[0] === rent &&
-          creatorTransfers[1] === creator)),
-    "Unproven completion creator-vault funding",
-  );
+  const funding = (address: string, payment: bigint) => {
+    const values = transfers.get(address) ?? [];
+    const extra = sum(address) - payment;
+    assert(
+      extra >= 0n &&
+        (extra === 0n ||
+          (values.length === 2 &&
+            values[0] === extra &&
+            values[1] === payment)),
+      "Unproven Pump buy account funding",
+    );
+    return extra;
+  };
+  const accountFundingLamports =
+    funding(expected.pool, sol) + funding(creatorVault, creator);
   const input = sol + creator + fee;
   assert(
-    observedInput === input + rent,
-    "Completion native cash flow disagrees with event",
+    observedInput === input + accountFundingLamports,
+    "Pump buy native cash flow disagrees with event",
   );
-  return input;
+  return { inputAmount: input, accountFundingLamports };
 }
