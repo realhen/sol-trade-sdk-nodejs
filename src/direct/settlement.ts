@@ -8,7 +8,7 @@ import {
 } from "@solana/spl-token";
 import bs58 from "bs58";
 import { Buffer } from "buffer";
-import { normalizeCompletionInput } from "./completion-settlement";
+import { normalizePumpBuyInput } from "./pump-buy-settlement";
 
 export interface DirectSwapExpectation {
   provider: "direct";
@@ -32,6 +32,8 @@ export interface DirectSwapExpectation {
   }[];
 }
 export interface NormalizedDirectFill {
+  /** SOL paid to protocol accounts beyond swap consideration; excludes refundable wallet rent. */
+  accountFundingLamports?: bigint;
   inputAmount: bigint;
   outputAmount: bigint;
   inputDecimals: number;
@@ -589,9 +591,28 @@ export function normalizeDirectFill(
     if (endpoint.native) endpoint.delta = transferDelta;
   }
   const outputAmount = output.delta;
-  const inputAmount =
-    expected.amountMode === "exact-output"
-      ? normalizeCompletionInput(
+  const nativePumpBuy = input.system && expected.venue === "Pump.fun";
+  const ownerDestinations = new Set<string>();
+  const repeatedNativePayment =
+    nativePumpBuy &&
+    swapInner.some((ix) => {
+      if (ix.programId !== SYSTEM) return false;
+      const parsed = ix.parsed as ObjectValue | undefined;
+      const info = parsed?.info as ObjectValue | undefined;
+      if (
+        parsed?.type !== "transfer" ||
+        info?.source !== owner ||
+        typeof info.destination !== "string"
+      )
+        return false;
+      if (ownerDestinations.has(info.destination)) return true;
+      ownerDestinations.add(info.destination);
+      return false;
+    });
+  const normalized =
+    expected.amountMode === "exact-output" ||
+    (nativePumpBuy && (repeatedNativePayment || -input.delta > budget))
+      ? normalizePumpBuyInput(
           expected,
           top,
           swapInner,
@@ -599,12 +620,14 @@ export function normalizeDirectFill(
           outputAmount,
           -input.delta,
         )
-      : -input.delta;
+      : { inputAmount: -input.delta, accountFundingLamports: 0n };
+  const { inputAmount, accountFundingLamports } = normalized;
   if (inputAmount <= 0n || inputAmount > budget)
     fail("actual input outside approved budget");
   if (outputAmount < floor) fail("actual net output below approved floor");
   return {
     inputAmount,
+    ...(accountFundingLamports ? { accountFundingLamports } : {}),
     outputAmount,
     inputDecimals: input.decimals,
     outputDecimals: output.decimals,

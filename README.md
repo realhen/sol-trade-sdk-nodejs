@@ -699,6 +699,14 @@ const { instructions, expectation } = await buildDirectSwap(market, quote, owner
 const fill = normalizeDirectFill(confirmedReceipt, expectation);
 ```
 
+`normalizeDirectFill` keeps authenticated native Pump curve/creator-vault funding
+separate from swap input in optional `accountFundingLamports`. This SOL expense
+excludes refundable wallet-account deposits. Callers should add it once to costs,
+alongside separately normalized network fees and tips. The swap input still must
+fit its approved budget; event, instruction, endpoint, and transfer evidence must
+reconcile before any funding adjustment is accepted. `npm run test:direct:funding`
+replays two recorded mainnet positions through the packaged normalizer.
+
 Preparation reads only through the supplied Connection and can run against a
 recording or cache-only connection. Rebuild the market when its streamed account
 dependencies change. Quotes and builds perform no RPC; quote objects are bound
